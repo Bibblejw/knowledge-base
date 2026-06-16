@@ -1,0 +1,180 @@
+/* ── Reset & Base ──────────────────────────────────────────────────── */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    line-height: 1.5;
+    min-height: 100vh;
+}
+
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Header ────────────────────────────────────────────────────────── */
+header {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 1rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+}
+
+header h1 { font-size: 1.25rem; }
+header h1 a { color: #f0f6fc; }
+header h1 a:hover { text-decoration: none; }
+
+header nav { display: flex; gap: 1rem; }
+header nav a { font-size: 0.9rem; color: #8b949e; }
+
+/* ── Main ──────────────────────────────────────────────────────────── */
+main { max-width: 960px; margin: 0 auto; padding: 2rem; }
+
+/* ── Upload Zone ───────────────────────────────────────────────────── */
+.upload-zone {
+    border: 2px dashed #30363d;
+    border-radius: 8px;
+    padding: 2rem;
+    text-align: center;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 2rem;
+}
+
+.upload-zone.dragover {
+    border-color: #58a6ff;
+    background: rgba(88, 166, 255, 0.05);
+}
+
+.upload-prompt .icon { font-size: 2rem; display: block; margin-bottom: 0.5rem; }
+.upload-prompt p { color: #8b949e; }
+.upload-prompt .link { color: #58a6ff; cursor: pointer; }
+.upload-prompt .link:hover { text-decoration: underline; }
+
+.upload-progress {
+    margin-top: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.upload-progress .bar {
+    flex: 1;
+    height: 6px;
+    background: #21262d;
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.upload-progress .bar::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 0%;
+    background: #58a6ff;
+    transition: width 0.3s;
+}
+
+#progress-text { font-size: 0.85rem; color: #8b949e; min-width: 3rem; }
+
+/* ── Recording List ────────────────────────────────────────────────── */
+.table-header {
+    display: flex;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #8b949e;
+    border-bottom: 1px solid #21262d;
+}
+
+.file-list {
+    list-style: none;
+}
+
+.file-list li {
+    display: flex;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid #21262d;
+    transition: background 0.15s;
+}
+
+.file-list li:hover { background: #161b22; }
+
+.col-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-size { width: 80px; text-align: right; color: #8b949e; font-size: 0.85rem; }
+.col-date { width: 130px; text-align: right; color: #8b949e; font-size: 0.85rem; }
+.col-play { width: 60px; text-align: center; }
+.col-delete { width: 40px; text-align: center; }
+
+.btn-play {
+    background: #238636;
+    color: #fff;
+    border: none;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+
+.btn-play:hover { background: #2ea043; }
+
+.btn-delete {
+    background: none;
+    border: none;
+    color: #8b949e;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.btn-delete:hover { color: #da3633; }
+
+.empty { text-align: center; color: #8b949e; padding: 3rem 0; }
+
+/* ── Player Bar ────────────────────────────────────────────────────── */
+.player-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #161b22;
+    border-top: 1px solid #30363d;
+    padding: 0.75rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.player-info { min-width: 0; }
+.player-info strong { display: block; font-size: 0.75rem; color: #8b949e; }
+#player-name { font-size: 0.9rem; color: #f0f6fc; }
+
+.player-bar audio { flex: 1; height: 40px; }
+
+.btn-close-player {
+    background: none;
+    border: none;
+    color: #8b949e;
+    font-size: 1.25rem;
+    cursor: pointer;
+    padding: 0.25rem;
+}
+
+.btn-close-player:hover { color: #f0f6fc; }
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+    main { padding: 1rem; }
+    .col-date { display: none; }
+    header { padding: 0.75rem 1rem; }
+}
