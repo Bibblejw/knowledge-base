@@ -114,6 +114,7 @@ main { max-width: 960px; margin: 0 auto; padding: 2rem; }
 .col-size { width: 80px; text-align: right; color: #8b949e; font-size: 0.85rem; }
 .col-date { width: 130px; text-align: right; color: #8b949e; font-size: 0.85rem; }
 .col-play { width: 60px; text-align: center; }
+.col-actions { display: flex; gap: 0.4rem; align-items: center; justify-content: flex-end; min-width: 220px; }
 .col-delete { width: 40px; text-align: center; }
 
 .btn-play {
@@ -127,6 +128,26 @@ main { max-width: 960px; margin: 0 auto; padding: 2rem; }
 }
 
 .btn-play:hover { background: #2ea043; }
+
+.btn-transcribe {
+    background: #1f6feb;
+    color: #fff;
+    border: none;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.btn-transcribe:hover { background: #388bfd; }
+.btn-transcribe:disabled { opacity: 0.6; cursor: default; }
+
+.btn-transcribed {
+    background: #238636;
+}
+
+.btn-transcribed:hover { background: #2ea043; }
 
 .btn-delete {
     background: none;
@@ -177,4 +198,44 @@ main { max-width: 960px; margin: 0 auto; padding: 2rem; }
     main { padding: 1rem; }
     .col-date { display: none; }
     header { padding: 0.75rem 1rem; }
+}
+
+/* ── Transcript ────────────────────────────────────────────────────── */
+.transcript-row {
+    display: block !important;
+    background: #0d1117;
+    padding: 0 !important;
+}
+
+.transcript-body {
+    padding: 0.75rem 0.75rem 0.75rem 2rem;
+    border-left: 3px solid #30363d;
+    margin: 0 0 0 0.75rem;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.transcript-text .seg {
+    margin-bottom: 0.5rem;
+    line-height: 1.6;
+    font-size: 0.9rem;
+}
+
+.speaker-label {
+    display: inline-block;
+    background: #1f6feb;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    margin-right: 0.35rem;
+    vertical-align: middle;
+}
+
+.timestamp {
+    color: #8b949e;
+    font-size: 0.8rem;
+    font-family: monospace;
+    margin-right: 0.35rem;
 }

@@ -1,21 +1,25 @@
 """Knowledge Base — Audio Recordings Vault.
 
-A self-hosted web app for uploading, browsing, and playing audio recordings.
-Built to grow into a broader knowledge management system.
+A self-hosted web app for uploading, browsing, playing, and transcribing
+audio recordings. Built to grow into a broader knowledge management system.
 """
 
 import os
 import time
+import threading
 from pathlib import Path
 
 from flask import (
     Flask,
     abort,
+    jsonify,
     render_template,
     request,
     send_from_directory,
     url_for,
 )
+
+import transcriber
 
 app = Flask(__name__)
 
@@ -35,6 +39,8 @@ ALLOWED_EXTENSIONS = {
     ".alac",
 }
 
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
 
 
@@ -42,6 +48,10 @@ app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
 
 def is_allowed(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
+
+
+def is_audio(filename: str) -> bool:
+    return is_allowed(filename)
 
 
 def human_size(size: int) -> str:
@@ -61,6 +71,7 @@ def list_recordings() -> list[dict]:
     for f in RECORDINGS_DIR.iterdir():
         if f.is_file() and is_allowed(f.name):
             stat = f.stat()
+            trans_status = transcriber.get_status(f.name)
             recordings.append(
                 {
                     "name": f.name,
@@ -70,6 +81,7 @@ def list_recordings() -> list[dict]:
                         "%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)
                     ),
                     "url": url_for("serve_file", filename=f.name),
+                    "transcription": trans_status,
                 }
             )
 
@@ -77,7 +89,7 @@ def list_recordings() -> list[dict]:
     return recordings
 
 
-# ── Routes ─────────────────────────────────────────────────────────────
+# ── Main Routes ────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -112,6 +124,50 @@ def delete_file(filename):
     if filepath.exists() and filepath.is_file():
         filepath.unlink()
     return "", 204
+
+
+# ── Transcription Routes ───────────────────────────────────────────────
+
+@app.route("/transcribe/<path:filename>", methods=["POST"])
+def transcribe_file(filename):
+    """Start transcription for a single file."""
+    audio_path = RECORDINGS_DIR / filename
+    if not audio_path.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    if not is_audio(filename):
+        return jsonify({"error": "Not an audio file"}), 400
+
+    # Check if already completed
+    status = transcriber.get_status(filename)
+    if status["status"] == "completed":
+        return jsonify({"status": "completed", "message": "Already transcribed"})
+
+    if status["status"] == "processing":
+        return jsonify({"status": "processing", "message": "Already in progress"})
+
+    # Launch background transcription
+    def _run():
+        transcriber.run_transcription(filename, hf_token=HF_TOKEN)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    return jsonify({"status": "started"}), 202
+
+
+@app.route("/transcribe/<path:filename>/status")
+def transcribe_status(filename):
+    """Get transcription status for a file."""
+    status = transcriber.get_status(filename)
+    return jsonify(status)
+
+
+@app.route("/transcribe/<path:filename>/result")
+def transcribe_result(filename):
+    """Get full transcription result."""
+    status = transcriber.get_status(filename)
+    return jsonify(status)
 
 
 # ── Entry point ────────────────────────────────────────────────────────

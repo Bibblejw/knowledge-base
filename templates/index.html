@@ -20,24 +20,47 @@
         <span class="col-name">Name</span>
         <span class="col-size">Size</span>
         <span class="col-date">Added</span>
-        <span class="col-play"></span>
-        <span class="col-delete"></span>
+        <span class="col-actions">Actions</span>
     </div>
-    <ul class="file-list">
+    <ul class="file-list" id="file-list">
         {% for r in recordings %}
-        <li>
+        <li data-name="{{ r.name }}">
             <span class="col-name" title="{{ r.name }}">{{ r.name }}</span>
             <span class="col-size">{{ r.size }}</span>
             <span class="col-date">{{ r.modified }}</span>
-            <span class="col-play">
+            <span class="col-actions">
                 <button class="btn-play" data-url="{{ r.url }}" data-name="{{ r.name }}">▶ Play</button>
-            </span>
-            <span class="col-delete">
+                <button class="btn-transcribe {% if r.transcription.status == 'completed' %}btn-transcribed{% endif %}"
+                        data-name="{{ r.name }}"
+                        data-status="{{ r.transcription.status }}">
+                    {% if r.transcription.status == 'completed' %}
+                        ✓ Transcribed
+                    {% elif r.transcription.status == 'processing' %}
+                        ⏳ Transcribing…
+                    {% else %}
+                        Transcribe
+                    {% endif %}
+                </button>
                 <form method="post" action="/delete/{{ r.name }}" class="inline-form" onsubmit="return confirm('Delete {{ r.name }}?')">
                     <button class="btn-delete" title="Delete">✕</button>
                 </form>
             </span>
         </li>
+        {% if r.transcription.status == 'completed' and r.transcription.segments %}
+        <li class="transcript-row" data-name="{{ r.name }}">
+            <div class="transcript-body">
+                <div class="transcript-text">
+                    {% for seg in r.transcription.segments %}
+                    <p class="seg">
+                        {% if seg.speaker %}<span class="speaker-label">{{ seg.speaker }}</span>{% endif %}
+                        <span class="timestamp">[{{ '%.1f'|format(seg.start) }}s - {{ '%.1f'|format(seg.end) }}s]</span>
+                        {{ seg.text }}
+                    </p>
+                    {% endfor %}
+                </div>
+            </div>
+        </li>
+        {% endif %}
         {% endfor %}
     </ul>
     {% else %}
@@ -66,6 +89,8 @@ function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
     progress.hidden = false;
+    progressBar.style.width = '0%';
+    progressText.textContent = '0%';
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/upload', true);
@@ -94,7 +119,6 @@ dropzone.addEventListener('drop', (e) => {
     dropzone.classList.remove('dragover');
     for (const file of e.dataTransfer.files) uploadFile(file);
 });
-
 fileInput.addEventListener('change', () => {
     for (const file of fileInput.files) uploadFile(file);
     fileInput.value = '';
@@ -114,10 +138,48 @@ document.querySelectorAll('.btn-play').forEach(btn => {
         audio.play();
     });
 });
-
 closeBtn.addEventListener('click', () => {
     audio.pause();
     player.hidden = true;
+});
+
+// ── Transcription ─────────────────────────────────────────────────────
+async function transcribe(filename, btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Starting…';
+
+    const resp = await fetch(`/transcribe/${encodeURIComponent(filename)}`, { method: 'POST' });
+    const data = await resp.json();
+
+    if (data.status === 'started' || data.status === 'processing') {
+        btn.textContent = '⏳ Transcribing…';
+        pollStatus(filename, btn);
+    } else if (data.status === 'completed') {
+        location.reload();
+    }
+}
+
+async function pollStatus(filename, btn) {
+    const resp = await fetch(`/transcribe/${encodeURIComponent(filename)}/status`);
+    const data = await resp.json();
+
+    if (data.status === 'completed') {
+        location.reload();
+    } else if (data.status === 'error') {
+        btn.textContent = '⚠️ Error';
+        btn.disabled = false;
+    } else {
+        btn.textContent = data.stage === 'diarizing' ? '⏳ Diarizing…' : '⏳ Transcribing…';
+        setTimeout(() => pollStatus(filename, btn), 3000);
+    }
+}
+
+document.querySelectorAll('.btn-transcribe').forEach(btn => {
+    const status = btn.dataset.status;
+    if (status === 'processing') {
+        pollStatus(btn.dataset.name, btn);
+    }
+    btn.addEventListener('click', () => transcribe(btn.dataset.name, btn));
 });
 </script>
 {% endblock %}
