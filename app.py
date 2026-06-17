@@ -9,6 +9,7 @@ import time
 import threading
 from pathlib import Path
 
+import requests
 from flask import (
     Flask,
     abort,
@@ -40,6 +41,7 @@ ALLOWED_EXTENSIONS = {
 }
 
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
+LEMONFOX_API_KEY = os.environ.get("LEMONFOX_API_KEY", "")
 
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
 
@@ -148,7 +150,7 @@ def transcribe_file(filename):
 
     # Launch background transcription
     def _run():
-        transcriber.run_transcription(filename, hf_token=HF_TOKEN)
+        transcriber.run_transcription(filename)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()

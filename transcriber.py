@@ -1,7 +1,7 @@
-"""Transcription worker — offline speech-to-text with speaker diarization.
+"""Transcription worker — LemonFox.ai API (cloud, with speaker diarization).
 
-Uses faster-whisper for transcription and pyannote.audio for diarization.
-Runs asynchronously, writing results as JSON sidecar files alongside the audio.
+Uses the LemonFox Speech-to-Text API for accurate transcription with
+speaker labels. Replaces the local faster-whisper + pyannote pipeline.
 """
 
 import json
@@ -9,8 +9,11 @@ import os
 import time
 from pathlib import Path
 
+import requests
+
 RECORDINGS_DIR = Path("/recordings")
 TRANSCRIPTIONS_DIR = RECORDINGS_DIR / ".transcriptions"
+LEMONFOX_API = "https://api.lemonfox.ai/v1/audio/transcriptions"
 
 
 def _status_path(filename: str) -> Path:
@@ -30,8 +33,7 @@ def get_status(filename: str) -> dict:
 
     if result_file.exists():
         with open(result_file) as f:
-            result = json.load(f)
-        return {"status": "completed", "segments": result.get("segments", []), "full_text": result.get("full_text", "")}
+            return json.load(f)
 
     if status_file.exists():
         with open(status_file) as f:
@@ -40,125 +42,113 @@ def get_status(filename: str) -> dict:
     return {"status": "not_started"}
 
 
+def _get_api_key() -> str:
+    """Return the LemonFox API key from env or .env file."""
+    key = os.environ.get("LEMONFOX_API_KEY", "")
+    if key:
+        return key
+
+    # Try loading from .env in the app directory
+    env_path = Path("/opt/knowledge-base/.env")
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("LEMONFOX_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
 def run_transcription(filename: str, hf_token: str = "") -> dict:
-    """Run transcription with diarization. Blocks until done. Called from a thread."""
+    """Run transcription using the LemonFox API. Blocks until done."""
     audio_path = RECORDINGS_DIR / filename
     if not audio_path.exists():
         return {"status": "error", "error": "File not found"}
 
-    # Mark as processing
-    status = {"status": "processing", "started_at": time.time()}
+    api_key = _get_api_key()
+    if not api_key:
+        return {
+            "status": "error",
+            "error": "LemonFox API key not set. Add LEMONFOX_API_KEY to /opt/knowledge-base/.env",
+        }
+
+    status = {"status": "processing", "started_at": time.time(), "stage": "uploading"}
     _write_status(filename, status)
 
     try:
-        status["stage"] = "transcribing"
-        _write_status(filename, status)
+        # Upload file to LemonFox
+        with open(audio_path, "rb") as f:
+            files = {"file": (filename, f, "audio/m4a")}
+            data = {
+                "response_format": "verbose_json",
+                "speaker_labels": "true",
+                "language": "english",
+            }
 
-        segments, info = _transcribe(audio_path)
+            status["stage"] = "transcribing"
+            _write_status(filename, status)
 
-        # Run diarization if pyannote is available
-        diarization_segments = []
-        if hf_token:
-            try:
-                status["stage"] = "diarizing"
-                _write_status(filename, status)
-                diarization_segments = _diarize(audio_path, hf_token)
-            except Exception as e:
-                # Diarization is optional — log and continue
-                pass
+            resp = requests.post(
+                LEMONFOX_API,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files=files,
+                data=data,
+                timeout=300,
+            )
 
-        # Align speaker labels with transcript segments
-        aligned = _align(segments, diarization_segments)
+        if resp.status_code != 200:
+            error_msg = resp.text[:500]
+            result = {"status": "error", "error": f"LemonFox API error ({resp.status_code}): {error_msg}"}
+            with open(_result_path(filename), "w") as f:
+                json.dump(result, f, indent=2)
+            return result
 
+        data = resp.json()
+
+        # Parse segments with speaker labels
+        segments = []
+        for seg in data.get("segments", []):
+            segments.append({
+                "start": seg.get("start", 0),
+                "end": seg.get("end", 0),
+                "text": seg.get("text", "").strip(),
+                "speaker": seg.get("speaker", None),
+            })
+
+        # Build full text with speaker labels
         full_text = "\n".join(
             f"[{s['speaker']}] {s['text']}" if s.get("speaker") else s["text"]
-            for s in aligned
+            for s in segments
         )
 
         result = {
             "status": "completed",
-            "segments": aligned,
+            "segments": segments,
             "full_text": full_text,
-            "language": info.language,
-            "duration": info.duration,
+            "language": data.get("language", "en"),
+            "duration": data.get("duration", 0),
             "completed_at": time.time(),
         }
 
         with open(_result_path(filename), "w") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        # Clean up status file
         _status_path(filename).unlink(missing_ok=True)
-
         return result
+
+    except requests.Timeout:
+        error_result = {"status": "error", "error": "LemonFox API request timed out"}
+        return _save_error(filename, error_result)
 
     except Exception as e:
         error_result = {"status": "error", "error": str(e)}
-        with open(_result_path(filename), "w") as f:
-            json.dump(error_result, f)
-        return error_result
+        return _save_error(filename, error_result)
 
 
-def _transcribe(audio_path: Path):
-    """Run faster-whisper transcription."""
-    from faster_whisper import WhisperModel
-
-    # Use the "base" model for CPU — good balance of speed vs accuracy
-    # Falls back to "tiny" if base is too slow
-    model = WhisperModel("base", device="cpu", compute_type="int8")
-    segments, info = model.transcribe(str(audio_path), beam_size=3)
-
-    result = []
-    for seg in segments:
-        result.append({
-            "start": seg.start,
-            "end": seg.end,
-            "text": seg.text.strip(),
-        })
-
-    return result, info
-
-
-def _diarize(audio_path: Path, hf_token: str):
-    """Run pyannote speaker diarization."""
-    from pyannote.audio import Pipeline
-
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
-    )
-
-    diarization = pipeline(str(audio_path))
-    segments = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
-        segments.append({
-            "start": turn.start,
-            "end": turn.end,
-            "speaker": speaker,
-        })
-
-    return segments
-
-
-def _align(transcript_segments, diarization_segments):
-    """Assign speaker labels to transcript segments."""
-    if not diarization_segments:
-        for seg in transcript_segments:
-            seg["speaker"] = None
-        return transcript_segments
-
-    aligned = []
-    for tseg in transcript_segments:
-        t_mid = (tseg["start"] + tseg["end"]) / 2
-        speaker = None
-        for dseg in diarization_segments:
-            if dseg["start"] <= t_mid <= dseg["end"]:
-                speaker = dseg["speaker"]
-                break
-        tseg["speaker"] = speaker
-        aligned.append(tseg)
-
-    return aligned
+def _save_error(filename: str, result: dict) -> dict:
+    """Write error result to disk and return it."""
+    with open(_result_path(filename), "w") as f:
+        json.dump(result, f)
+    return result
 
 
 def _write_status(filename: str, data: dict):
