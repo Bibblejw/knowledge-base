@@ -1,4 +1,5 @@
-"""Knowledge Base — Audio Recordings Vault.
+"""
+Knowledge Base — Audio Recordings Vault.
 
 A self-hosted web app for uploading, browsing, playing, and transcribing
 audio recordings. Built to grow into a broader knowledge management system.
@@ -6,6 +7,7 @@ audio recordings. Built to grow into a broader knowledge management system.
 
 import os
 import time
+import json
 import threading
 from pathlib import Path
 
@@ -28,22 +30,25 @@ app = Flask(__name__)
 
 RECORDINGS_DIR = Path("/recordings")
 ALLOWED_EXTENSIONS = {
-    ".mp3",
-    ".wav",
-    ".flac",
-    ".ogg",
-    ".aac",
-    ".m4a",
-    ".opus",
-    ".wma",
-    ".aiff",
-    ".alac",
+    ".mp3", ".wav", ".flac", ".ogg", ".aac",
+    ".m4a", ".opus", ".wma", ".aiff", ".alac",
 }
 
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-LEMONFOX_API_KEY = os.environ.get("LEMONFOX_API_KEY", "")
-
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
+
+# Speaker colour palette (cycling)
+SPEAKER_COLORS = [
+    "#58a6ff",  # blue
+    "#3fb950",  # green
+    "#d29922",  # yellow/gold
+    "#f85149",  # red
+    "#bc8cff",  # purple
+    "#79c0ff",  # light blue
+    "#56d364",  # light green
+    "#e3b341",  # amber
+    "#ff7b72",  # salmon
+    "#d2a8ff",  # lavender
+]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -64,31 +69,76 @@ def human_size(size: int) -> str:
     return f"{size:.1f} PB"
 
 
+def speaker_color(name: str) -> str:
+    """Deterministic colour for a speaker name."""
+    idx = hash(name) % len(SPEAKER_COLORS)
+    return SPEAKER_COLORS[idx]
+
+
 def list_recordings() -> list[dict]:
     """Return sorted list of recording info dicts."""
     recordings = []
     if not RECORDINGS_DIR.exists():
         return recordings
 
-    for f in RECORDINGS_DIR.iterdir():
+    for f in sorted(RECORDINGS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if f.is_file() and is_allowed(f.name):
             stat = f.stat()
             trans_status = transcriber.get_status(f.name)
-            recordings.append(
-                {
-                    "name": f.name,
-                    "size": human_size(stat.st_size),
-                    "size_bytes": stat.st_size,
-                    "modified": time.strftime(
-                        "%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)
-                    ),
-                    "url": url_for("serve_file", filename=f.name),
-                    "transcription": trans_status,
-                }
-            )
+            # Extract speaker list from result if completed
+            speakers = []
+            if trans_status.get("status") == "completed":
+                segs = trans_status.get("sentences", [])
+                speakers = sorted(set(s["speaker"] for s in segs))
+            recordings.append({
+                "name": f.name,
+                "size": human_size(stat.st_size),
+                "size_bytes": stat.st_size,
+                "modified": time.strftime(
+                    "%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)
+                ),
+                "url": url_for("serve_file", filename=f.name),
+                "transcription": trans_status,
+                "speakers": speakers,
+            })
 
-    recordings.sort(key=lambda r: r["name"].lower())
     return recordings
+
+
+def get_speaker_stats() -> dict:
+    """Aggregate speaker appearances across all transcriptions."""
+    from diarization import list_speakers
+    enrolled = {s: {"enrolled": True} for s in list_speakers()}
+    discovered = {}
+
+    if not RECORDINGS_DIR.exists():
+        return {"enrolled": enrolled, "discovered": discovered}
+
+    for f in RECORDINGS_DIR.iterdir():
+        if not f.is_file() or not is_allowed(f.name):
+            continue
+        status = transcriber.get_status(f.name)
+        if status.get("status") != "completed":
+            continue
+        segs = status.get("sentences", [])
+        seen = set()
+        for s in segs:
+            sp = s.get("speaker", "UNKNOWN")
+            if sp not in seen:
+                seen.add(sp)
+                if sp not in discovered:
+                    discovered[sp] = {"enrolled": False, "recordings": [], "sentences": 0}
+                discovered[sp]["recordings"].append(f.name)
+            discovered[sp]["sentences"] += 1
+
+    return {"enrolled": enrolled, "discovered": discovered}
+
+
+# ── Template Globals ───────────────────────────────────────────────────
+
+@app.context_processor
+def utility_processor():
+    return dict(speaker_color=speaker_color)
 
 
 # ── Main Routes ────────────────────────────────────────────────────────
@@ -102,14 +152,11 @@ def index():
 def upload():
     if "file" not in request.files:
         return "No file provided", 400
-
     file = request.files["file"]
     if not file.filename:
         return "No file selected", 400
-
     if not is_allowed(file.filename):
         return f"File type not allowed. Supported: {', '.join(sorted(ALLOWED_EXTENSIONS))}", 400
-
     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
     file.save(str(RECORDINGS_DIR / file.filename))
     return "", 204
@@ -125,7 +172,66 @@ def delete_file(filename):
     filepath = RECORDINGS_DIR / filename
     if filepath.exists() and filepath.is_file():
         filepath.unlink()
+        # Clean up transcription files
+        for f in (RECORDINGS_DIR / ".transcriptions").glob(f"{filename}.*"):
+            f.unlink(missing_ok=True)
     return "", 204
+
+
+# ── Recording Detail ───────────────────────────────────────────────────
+
+@app.route("/recordings/<path:filename>")
+def recording_detail(filename):
+    """View a recording's full transcript."""
+    audio_path = RECORDINGS_DIR / filename
+    if not audio_path.exists():
+        abort(404)
+
+    stat = audio_path.stat()
+    status = transcriber.get_status(filename)
+
+    if status.get("status") != "completed":
+        return render_template("recording.html",
+            recording={
+                "name": filename,
+                "size": human_size(stat.st_size),
+                "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+                "url": url_for("serve_file", filename=filename),
+                "status": status.get("status", "unknown"),
+            },
+            transcript=None,
+            speakers=[],
+        )
+
+    segments = status.get("sentences", [])
+    speaker_turns = status.get("speaker_turns", [])
+    speakers = sorted(set(s["speaker"] for s in segments))
+    speaker_info = {s: {"color": speaker_color(s)} for s in speakers}
+
+    return render_template("recording.html",
+        recording={
+            "name": filename,
+            "size": human_size(stat.st_size),
+            "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+            "url": url_for("serve_file", filename=filename),
+            "status": "completed",
+            "duration": status.get("audio_duration_seconds", 0),
+            "engine": status.get("engine", ""),
+        },
+        transcript=segments,
+        speakers=speaker_info,
+        speaker_turns=speaker_turns,
+    )
+
+
+@app.route("/recordings/<path:filename>/raw_transcript")
+def raw_transcript(filename):
+    """Return plain text transcript."""
+    status = transcriber.get_status(filename)
+    if status.get("status") != "completed":
+        return jsonify({"error": "Not transcribed"}), 404
+    full_text = status.get("full_text", "")
+    return full_text, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 # ── Transcription Routes ───────────────────────────────────────────────
@@ -136,54 +242,85 @@ def transcribe_file(filename):
     audio_path = RECORDINGS_DIR / filename
     if not audio_path.exists():
         return jsonify({"error": "File not found"}), 404
-
     if not is_audio(filename):
         return jsonify({"error": "Not an audio file"}), 400
 
-    # Check if already completed
     status = transcriber.get_status(filename)
     if status["status"] == "completed":
         return jsonify({"status": "completed", "message": "Already transcribed"})
-
     if status["status"] == "processing":
         return jsonify({"status": "processing", "message": "Already in progress"})
 
-    # Launch background transcription
     def _run():
         transcriber.run_transcription(filename)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-
     return jsonify({"status": "started"}), 202
 
 
 @app.route("/transcribe/<path:filename>/status")
 def transcribe_status(filename):
-    """Get transcription status for a file."""
     status = transcriber.get_status(filename)
     return jsonify(status)
 
 
 @app.route("/transcribe/<path:filename>/result")
 def transcribe_result(filename):
-    """Get full transcription result."""
     status = transcriber.get_status(filename)
     return jsonify(status)
 
 
-# ── Speaker enrollment ─────────────────────────────────────────────────
+# ── Batch Transcription ────────────────────────────────────────────────
 
-@app.route("/speakers", methods=["GET"])
-def speaker_list():
-    """List enrolled speakers."""
+@app.route("/batch_transcribe", methods=["POST"])
+def batch_transcribe():
+    """Transcribe all untranscribed recordings."""
+    batch = []
+    if RECORDINGS_DIR.exists():
+        for f in sorted(RECORDINGS_DIR.iterdir()):
+            if f.is_file() and is_allowed(f.name):
+                status = transcriber.get_status(f.name)
+                if status["status"] not in ("completed", "processing"):
+                    batch.append(f.name)
+
+    if not batch:
+        return jsonify({"status": "none", "message": "All recordings already transcribed"})
+
+    def _run_batch():
+        for name in batch:
+            transcriber.run_transcription(name)
+
+    t = threading.Thread(target=_run_batch, daemon=True)
+    t.start()
+
+    return jsonify({"status": "started", "count": len(batch), "files": batch}), 202
+
+
+# ── Speaker Enrollment & Management ────────────────────────────────────
+
+@app.route("/speakers")
+def speaker_page():
+    """Speaker management page."""
     from diarization import list_speakers
-    speakers = list_speakers()
-    return jsonify({"speakers": speakers, "count": len(speakers)})
+    enrolled = list_speakers()
+    stats = get_speaker_stats()
+    return render_template("speakers.html",
+        enrolled=enrolled,
+        stats=stats,
+        speaker_color=speaker_color,
+    )
 
 
-@app.route("/speakers/enroll", methods=["POST"])
-def speaker_enroll():
+@app.route("/api/speakers", methods=["GET"])
+def api_speaker_list():
+    """List all speakers (enrolled + discovered)."""
+    stats = get_speaker_stats()
+    return jsonify(stats)
+
+
+@app.route("/api/speakers/enroll", methods=["POST"])
+def api_speaker_enroll():
     """Enroll a speaker from an uploaded voice clip."""
     if "audio" not in request.files or "name" not in request.form:
         return jsonify({"error": "audio file and speaker name required"}), 400
@@ -210,13 +347,58 @@ def speaker_enroll():
             pass
 
 
-@app.route("/speakers/<name>", methods=["DELETE"])
-def speaker_remove(name):
+@app.route("/api/speakers/<name>", methods=["DELETE"])
+def api_speaker_remove(name):
     """Remove an enrolled speaker."""
     from diarization import remove_speaker
     if remove_speaker(name):
         return jsonify({"status": "removed"})
     return jsonify({"error": "Speaker not found"}), 404
+
+
+@app.route("/api/speakers/rename", methods=["POST"])
+def api_speaker_rename():
+    """Rename a discovered speaker across all transcriptions."""
+    data = request.get_json()
+    old_name = data.get("old_name", "").strip()
+    new_name = data.get("new_name", "").strip()
+    if not old_name or not new_name:
+        return jsonify({"error": "old_name and new_name required"}), 400
+    if not new_name.startswith("Speaker_") and not new_name.isalnum():
+        return jsonify({"error": "Name must be alphanumeric"}), 400
+
+    renamed = 0
+    if RECORDINGS_DIR.exists():
+        for f in RECORDINGS_DIR.iterdir():
+            if not f.is_file() or not is_allowed(f.name):
+                continue
+            result_path = RECORDINGS_DIR / ".transcriptions" / f"{f.name}.result.json"
+            if not result_path.exists():
+                continue
+            try:
+                with open(result_path) as rp:
+                    data = json.load(rp)
+                modified = False
+                for seg in data.get("sentences", []):
+                    if seg.get("speaker") == old_name:
+                        seg["speaker"] = new_name
+                        modified = True
+                for seg in data.get("diarization_segments", []):
+                    if seg.get("speaker") == old_name:
+                        seg["speaker"] = new_name
+                        modified = True
+                for turn in data.get("speaker_turns", []):
+                    if turn.get("speaker") == old_name:
+                        turn["speaker"] = new_name
+                        modified = True
+                if modified:
+                    with open(result_path, "w") as rp:
+                        json.dump(data, rp, indent=2, ensure_ascii=False)
+                    renamed += 1
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    return jsonify({"status": "renamed", "old_name": old_name, "new_name": new_name, "files_updated": renamed})
 
 
 # ── Entry point ────────────────────────────────────────────────────────

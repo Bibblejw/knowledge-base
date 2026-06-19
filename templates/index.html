@@ -14,20 +14,45 @@
     </div>
 </section>
 
+<section class="toolbar">
+    <div class="toolbar-left">
+        <span class="recording-count">{{ recordings|length }} recording{% if recordings|length != 1 %}s{% endif %}</span>
+    </div>
+    <div class="toolbar-right">
+        <button class="btn-batch" id="btn-batch">▶ Transcribe All Pending</button>
+        <div id="batch-status" hidden></div>
+    </div>
+</section>
+
 <section class="recordings">
     {% if recordings %}
     <div class="table-header">
         <span class="col-name">Name</span>
         <span class="col-size">Size</span>
         <span class="col-date">Added</span>
+        <span class="col-speakers">Speakers</span>
         <span class="col-actions">Actions</span>
     </div>
     <ul class="file-list" id="file-list">
         {% for r in recordings %}
         <li data-name="{{ r.name }}">
-            <span class="col-name" title="{{ r.name }}">{{ r.name }}</span>
+            <span class="col-name">
+                <a href="/recordings/{{ r.name }}" class="recording-link" title="{{ r.name }}">{{ r.name }}</a>
+            </span>
             <span class="col-size">{{ r.size }}</span>
             <span class="col-date">{{ r.modified }}</span>
+            <span class="col-speakers">
+                {% if r.speakers %}
+                    {% for sp in r.speakers[:4] %}
+                    <span class="mini-speaker" style="--speaker-color: {{ speaker_color(sp) }}">{{ sp }}</span>
+                    {% endfor %}
+                    {% if r.speakers|length > 4 %}
+                    <span class="mini-speaker-more">+{{ r.speakers|length - 4 }}</span>
+                    {% endif %}
+                {% else %}
+                    <span class="no-speakers">—</span>
+                {% endif %}
+            </span>
             <span class="col-actions">
                 <button class="btn-play" data-url="{{ r.url }}" data-name="{{ r.name }}">▶ Play</button>
                 <button class="btn-transcribe {% if r.transcription.status == 'completed' %}btn-transcribed{% endif %}"
@@ -46,17 +71,20 @@
                 </form>
             </span>
         </li>
-        {% if r.transcription.status == 'completed' and r.transcription.segments %}
+        {% if r.transcription.status == 'completed' and r.speakers %}
         <li class="transcript-row" data-name="{{ r.name }}">
             <div class="transcript-body">
                 <div class="transcript-text">
-                    {% for seg in r.transcription.segments %}
+                    {% for seg in r.transcription.sentences[:5] %}
                     <p class="seg">
-                        {% if seg.speaker %}<span class="speaker-label">{{ seg.speaker }}</span>{% endif %}
-                        <span class="timestamp">[{{ '%.1f'|format(seg.start) }}s - {{ '%.1f'|format(seg.end) }}s]</span>
-                        {{ seg.text }}
+                        <span class="speaker-label" style="--speaker-color-raw: {{ speaker_color(seg.speaker) }}">{{ seg.speaker }}</span>
+                        <span class="timestamp">[{{ '%.1f'|format(seg.start) }}s]</span>
+                        {{ seg.text[:150] }}{% if seg.text|length > 150 %}…{% endif %}
                     </p>
                     {% endfor %}
+                    {% if r.transcription.sentences|length > 5 %}
+                    <p class="seg-more"><a href="/recordings/{{ r.name }}">View full transcript →</a></p>
+                    {% endif %}
                 </div>
             </div>
         </li>
@@ -169,7 +197,7 @@ async function pollStatus(filename, btn) {
         btn.textContent = '⚠️ Error';
         btn.disabled = false;
     } else {
-        btn.textContent = data.stage === 'diarizing' ? '⏳ Diarizing…' : '⏳ Transcribing…';
+        btn.textContent = data.stage === 'diarizing' ? '⏳ Diarizing…' : data.stage === 'preprocessing' ? '⏳ Preprocessing…' : '⏳ Transcribing…';
         setTimeout(() => pollStatus(filename, btn), 3000);
     }
 }
@@ -180,6 +208,31 @@ document.querySelectorAll('.btn-transcribe').forEach(btn => {
         pollStatus(btn.dataset.name, btn);
     }
     btn.addEventListener('click', () => transcribe(btn.dataset.name, btn));
+});
+
+// ── Batch transcribe ──────────────────────────────────────────────────
+document.getElementById('btn-batch').addEventListener('click', async function() {
+    const status = document.getElementById('batch-status');
+    this.disabled = true;
+    status.hidden = false;
+    status.textContent = '⏳ Starting batch…';
+
+    const resp = await fetch('/batch_transcribe', { method: 'POST' });
+    const data = await resp.json();
+
+    if (data.status === 'started') {
+        status.textContent = `⏳ Transcribing ${data.count} file(s)…`;
+        // Poll until all done
+        async function checkAll() {
+            const listResp = await fetch('/');
+            // Simple: reload when we detect all transcribed
+            setTimeout(() => location.reload(), 5000);
+        }
+        checkAll();
+    } else if (data.status === 'none') {
+        status.textContent = '✅ All files already transcribed';
+        setTimeout(() => { status.hidden = true; this.disabled = false; }, 2000);
+    }
 });
 </script>
 {% endblock %}

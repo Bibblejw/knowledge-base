@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Speakers — Knowledge Base{% endblock %}
+{% block content %}
+
+<section class="speakers-header">
+    <h2>Speaker Management</h2>
+    <p class="subtitle">Enroll speakers with voice clips for automatic recognition, or rename discovered speakers from transcripts.</p>
+</section>
+
+<section class="speaker-section">
+    <h3>Enrolled Speakers <span class="badge">{{ enrolled|length }}</span></h3>
+    {% if enrolled %}
+    <div class="speaker-grid">
+        {% for name in enrolled %}
+        <div class="speaker-card enrolled" style="--speaker-color: {{ speaker_color(name) }}">
+            <div class="speaker-card-header">
+                <span class="speaker-icon">👤</span>
+                <strong class="speaker-name">{{ name }}</strong>
+                <span class="enrolled-badge">Enrolled</span>
+            </div>
+            <div class="speaker-card-actions">
+                <form method="post" action="/api/speakers/{{ name }}/rename" class="inline-form rename-form"
+                    onsubmit="event.preventDefault(); renameSpeaker(this, '{{ name }}')">
+                    <input type="hidden" name="old_name" value="{{ name }}">
+                    <input type="text" name="new_name" class="rename-input" placeholder="New name" required>
+                    <button class="btn-rename" type="submit">Rename</button>
+                </form>
+                <button class="btn-delete-sm" onclick="removeSpeaker('{{ name }}')">Remove</button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">No enrolled speakers yet. Upload a voice clip to enroll one.</p>
+    {% endif %}
+</section>
+
+<section class="speaker-section">
+    <h3>Enroll New Speaker</h3>
+    <form id="enroll-form" class="enroll-form" enctype="multipart/form-data">
+        <div class="form-row">
+            <input type="text" name="name" placeholder="Speaker name (e.g. John)" required class="form-input" id="enroll-name">
+            <input type="file" name="audio" accept="audio/*" required class="form-file" id="enroll-file">
+            <button type="submit" class="btn-enroll">Enroll</button>
+        </div>
+        <div class="form-help">Upload a clear voice clip (20–60 seconds) for best results.</div>
+        <div id="enroll-status" class="form-status" hidden></div>
+    </form>
+</section>
+
+<section class="speaker-section">
+    <h3>Discovered Speakers <span class="badge">{{ stats.discovered|length }}</span></h3>
+    {% if stats.discovered %}
+    <div class="speaker-grid">
+        {% for name, info in stats.discovered.items() %}
+        <div class="speaker-card discovered" style="--speaker-color: {{ speaker_color(name) }}">
+            <div class="speaker-card-header">
+                <span class="speaker-icon">🗣️</span>
+                <strong class="speaker-name">{{ name }}</strong>
+                <span class="sentences-count">{{ info.sentences }} sentences</span>
+            </div>
+            <div class="speaker-card-meta">
+                <small>Appears in:</small>
+                <ul class="recording-list">
+                    {% for rec in info.recordings %}
+                    <li><a href="/recordings/{{ rec }}">{{ rec }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="speaker-card-actions">
+                <form class="rename-form"
+                    onsubmit="event.preventDefault(); renameSpeaker(this, '{{ name }}')">
+                    <input type="hidden" name="old_name" value="{{ name }}">
+                    <input type="text" name="new_name" class="rename-input" placeholder="Rename to..." required>
+                    <button class="btn-rename" type="submit">Rename</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">No speakers discovered yet. Transcribe a recording first.</p>
+    {% endif %}
+</section>
+
+<script>
+// ── Enroll speaker ────────────────────────────────────────────────────
+document.getElementById('enroll-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const status = document.getElementById('enroll-status');
+    status.hidden = false;
+    status.className = 'form-status processing';
+    status.textContent = '⏳ Enrolling…';
+
+    const formData = new FormData(this);
+    const resp = await fetch('/api/speakers/enroll', { method: 'POST', body: formData });
+    const data = await resp.json();
+
+    if (data.status === 'enrolled') {
+        status.className = 'form-status success';
+        status.textContent = `✅ Enrolled "${data.name}" (${data.total_speakers} total)`;
+        setTimeout(() => location.reload(), 1500);
+    } else {
+        status.className = 'form-status error';
+        status.textContent = `⚠️ ${data.error || 'Enrollment failed'}`;
+    }
+});
+
+// ── Rename speaker ────────────────────────────────────────────────────
+async function renameSpeaker(form, oldName) {
+    const newName = form.querySelector('input[name="new_name"]').value.trim();
+    if (!newName || !confirm(`Rename "${oldName}" → "${newName}"?`)) return;
+
+    const resp = await fetch('/api/speakers/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old_name: oldName, new_name: newName }),
+    });
+    const data = await resp.json();
+    if (data.status === 'renamed') {
+        location.reload();
+    } else {
+        alert(`Error: ${data.error}`);
+    }
+}
+
+// ── Remove speaker ────────────────────────────────────────────────────
+async function removeSpeaker(name) {
+    if (!confirm(`Remove "${name}" from enrolled speakers?`)) return;
+    const resp = await fetch(`/api/speakers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (data.status === 'removed') {
+        location.reload();
+    } else {
+        alert(`Error: ${data.error}`);
+    }
+}
+</script>
+
+{% endblock %}

@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}{{ recording.name }} — Recording{% endblock %}
+{% block content %}
+
+<nav class="breadcrumb">
+    <a href="/">← Recordings</a>
+    <span>{{ recording.name }}</span>
+</nav>
+
+<section class="recording-header">
+    <div class="recording-meta">
+        <h2>{{ recording.name }}</h2>
+        <div class="meta-row">
+            <span class="meta-item">{{ recording.size }}</span>
+            <span class="meta-item">{{ recording.modified }}</span>
+            {% if recording.duration %}
+            <span class="meta-item">{{ "%.0f"|format(recording.duration) }}s audio</span>
+            {% endif %}
+            {% if recording.engine %}
+            <span class="meta-item">{{ recording.engine }}</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="recording-actions">
+        <button class="btn-play" data-url="{{ recording.url }}" data-name="{{ recording.name }}">▶ Play</button>
+        <a href="{{ url_for('raw_transcript', filename=recording.name) }}" class="btn-raw" download>📄 Download TXT</a>
+        <form method="post" action="/delete/{{ recording.name }}" class="inline-form" onsubmit="return confirm('Delete {{ recording.name }}?')">
+            <button class="btn-delete" title="Delete">✕ Delete</button>
+        </form>
+    </div>
+</section>
+
+{% if recording.status == "processing" %}
+<section class="status-banner processing">
+    ⏳ Transcription in progress… <span id="stage"></span>
+    <script>
+    async function pollStatus() {
+        const resp = await fetch("{{ url_for('transcribe_status', filename=recording.name) }}");
+        const data = await resp.json();
+        if (data.status === "completed") { location.reload(); }
+        else if (data.status === "error") {
+            document.getElementById('stage').textContent = '⚠️ Error';
+        } else {
+            document.getElementById('stage').textContent = data.stage || '';
+            setTimeout(pollStatus, 3000);
+        }
+    }
+    pollStatus();
+    </script>
+</section>
+{% elif recording.status == "error" %}
+<section class="status-banner error">⚠️ Transcription failed. <a href="{{ url_for('transcribe_file', filename=recording.name) }}" onclick="event.preventDefault(); fetch(this.href,{method:'POST'}).then(()=>location.reload())">Retry</a></section>
+{% elif recording.status == "not_started" %}
+<section class="status-banner">
+    Not yet transcribed.
+    <form method="post" action="{{ url_for('transcribe_file', filename=recording.name) }}" class="inline-form">
+        <button class="btn-transcribe">Transcribe</button>
+    </form>
+</section>
+{% endif %}
+
+{% if recording.status == "completed" %}
+<section class="speaker-summary">
+    <h3>Speakers</h3>
+    <div class="speaker-chips">
+        {% for name, info in speakers.items() %}
+        <span class="speaker-chip" style="--speaker-color: {{ info.color }}">
+            {{ name }}
+        </span>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="transcript-full">
+    <div class="transcript-controls">
+        <label>
+            <input type="checkbox" id="compact-mode" checked> Compact mode
+        </label>
+        <label>
+            <input type="checkbox" id="auto-scroll"> Auto-scroll
+        </label>
+    </div>
+
+    <div class="transcript-scroll" id="transcript-scroll">
+        {% if speaker_turns %}
+        {# Merged speaker turns — cleaner view #}
+        {% for turn in speaker_turns %}
+        <div class="turn" data-speaker="{{ turn.speaker }}" style="--speaker-color: {{ speakers[turn.speaker].color if turn.speaker in speakers else '#8b949e' }}">
+            <div class="turn-label">
+                <span class="speaker-badge">{{ turn.speaker }}</span>
+                <span class="turn-time">{{ "%.1f"|format(turn.start) }}s – {{ "%.1f"|format(turn.end) }}s</span>
+            </div>
+            <div class="turn-text">{{ turn.text }}</div>
+        </div>
+        {% endfor %}
+        {% else %}
+        {# Fall back to sentence-level view #}
+        {% for seg in transcript %}
+        <div class="seg" data-speaker="{{ seg.speaker }}" style="--speaker-color: {{ speakers[seg.speaker].color if seg.speaker in speakers else '#8b949e' }}">
+            <span class="speaker-badge">{{ seg.speaker }}</span>
+            <span class="seg-time">[{{ "%.1f"|format(seg.start) }}s]</span>
+            <span class="seg-text">{{ seg.text }}</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+</section>
+
+<script>
+// Compact mode toggle
+document.getElementById('compact-mode').addEventListener('change', function() {
+    document.querySelectorAll('.turn, .seg').forEach(el => {
+        if (this.checked) {
+            el.classList.remove('expanded');
+        }
+    });
+});
+
+// Auto-scroll with audio
+const audioPlayer = document.getElementById('audio-player');
+const scrollContainer = document.getElementById('transcript-scroll');
+
+document.getElementById('auto-scroll').addEventListener('change', function() {
+    if (this.checked && audioPlayer && !audioPlayer.paused) {
+        // Start tracking — will find closest segment
+    }
+});
+
+if (audioPlayer) {
+    audioPlayer.addEventListener('timeupdate', function() {
+        if (!document.getElementById('auto-scroll').checked) return;
+        const current = this.currentTime;
+        const turns = scrollContainer.querySelectorAll('.turn, .seg');
+        for (const turn of turns) {
+            const timeMatch = turn.querySelector('.turn-time, .seg-time');
+            if (!timeMatch) continue;
+            const match = timeMatch.textContent.match(/^([\d.]+)/);
+            if (match && parseFloat(match[1]) >= current - 1) {
+                turn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                turn.classList.add('highlight');
+                setTimeout(() => turn.classList.remove('highlight'), 2000);
+                break;
+            }
+        }
+    });
+}
+</script>
+{% endif %}
+
+<aside class="player-bar" id="player" hidden>
+    <div class="player-info">
+        <strong id="now-playing">Now Playing</strong>
+        <span id="player-name"></span>
+    </div>
+    <audio id="audio-player" controls autoplay></audio>
+    <button class="btn-close-player" id="close-player">✕</button>
+</aside>
+
+<script>
+// Play button
+document.querySelectorAll('.btn-play').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const player = document.getElementById('player');
+        const audio = document.getElementById('audio-player');
+        audio.src = btn.dataset.url;
+        document.getElementById('player-name').textContent = btn.dataset.name;
+        player.hidden = false;
+        audio.play();
+    });
+});
+document.getElementById('close-player')?.addEventListener('click', () => {
+    const player = document.getElementById('player');
+    const audio = document.getElementById('audio-player');
+    audio.pause();
+    player.hidden = true;
+});
+</script>
+
+{% endblock %}
