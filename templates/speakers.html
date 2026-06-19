@@ -49,6 +49,18 @@
 </section>
 
 <section class="speaker-section">
+    <h3>Cross-Recording Matching</h3>
+    <p class="subtitle" style="margin-bottom:0.75rem;color:#8b949e;font-size:0.9rem;">
+        Speakers are automatically matched across recordings using ECAPA voice embeddings.
+        If the same person appears in multiple files, they get the same label.
+    </p>
+    <div class="toolbar">
+        <button class="btn-batch" id="btn-rebuild">🔄 Rebuild Global Library</button>
+        <span id="rebuild-status" style="margin-left:0.75rem;font-size:0.85rem;color:#8b949e;"></span>
+    </div>
+</section>
+
+<section class="speaker-section">
     <h3>Discovered Speakers <span class="badge">{{ stats.discovered|length }}</span></h3>
     {% if stats.discovered %}
     <div class="speaker-grid">
@@ -135,6 +147,21 @@ async function removeSpeaker(name) {
         alert(`Error: ${data.error}`);
     }
 }
+
+// ── Rebuild global library ────────────────────────────────────────────
+document.getElementById('btn-rebuild')?.addEventListener('click', async function() {
+    const status = document.getElementById('rebuild-status');
+    this.disabled = true;
+    status.textContent = '⏳ Rebuilding…';
+    const resp = await fetch('/api/global_speakers/rebuild', { method: 'POST' });
+    const data = await resp.json();
+    if (data.status === 'rebuilt') {
+        status.textContent = `✅ Rebuilt: ${data.speaker_count} speakers`;
+    } else {
+        status.textContent = `⚠️ ${data.message || 'Failed'}`;
+    }
+    setTimeout(() => { this.disabled = false; }, 3000);
+});
 </script>
 
 {% endblock %}

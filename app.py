@@ -302,12 +302,14 @@ def batch_transcribe():
 @app.route("/speakers")
 def speaker_page():
     """Speaker management page."""
-    from diarization import list_speakers
+    from diarization import list_speakers, list_global_speakers
     enrolled = list_speakers()
+    global_speakers = list_global_speakers()
     stats = get_speaker_stats()
     return render_template("speakers.html",
         enrolled=enrolled,
         stats=stats,
+        global_speakers=global_speakers,
         speaker_color=speaker_color,
     )
 
@@ -364,7 +366,7 @@ def api_speaker_rename():
     new_name = data.get("new_name", "").strip()
     if not old_name or not new_name:
         return jsonify({"error": "old_name and new_name required"}), 400
-    if not new_name.startswith("Speaker_") and not new_name.isalnum():
+    if not new_name.replace("_", "").isalnum():
         return jsonify({"error": "Name must be alphanumeric"}), 400
 
     renamed = 0
@@ -399,6 +401,24 @@ def api_speaker_rename():
                 continue
 
     return jsonify({"status": "renamed", "old_name": old_name, "new_name": new_name, "files_updated": renamed})
+
+
+# ── Global Discovered Speakers ─────────────────────────────────────────
+
+@app.route("/api/global_speakers")
+def api_global_speakers():
+    """List speakers in the cross-recording global library."""
+    from diarization import list_global_speakers
+    speakers = list_global_speakers()
+    return jsonify({"speakers": speakers, "count": len(speakers)})
+
+
+@app.route("/api/global_speakers/rebuild", methods=["POST"])
+def api_rebuild_global():
+    """Rebuild the global speaker library from all existing transcriptions."""
+    from diarization import rebuild_global_library
+    result = rebuild_global_library()
+    return jsonify(result)
 
 
 # ── Entry point ────────────────────────────────────────────────────────

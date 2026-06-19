@@ -2,6 +2,14 @@
 Diarization module — SpeechBrain ECAPA embeddings + sklearn clustering.
 Runs on the Knowledge Base container (LXC 113).
 Handles VAD -> embed -> cluster -> speaker match -> align with ASR timestamps.
+
+Cross-recording speaker matching:
+- After clustering each recording, cluster mean embeddings are stored in a
+  global discovered-speaker library.
+- When a new recording is diarized, unknown clusters are matched against
+  this global library first (threshold 0.60), then against user-enrolled
+  speakers (threshold 0.65, higher priority).
+- This gives consistent speaker labels across recordings without manual enrollment.
 """
 import os
 import json
@@ -23,7 +31,13 @@ logger = logging.getLogger('diarization')
 
 # --- Config ---
 SPEAKER_LIBRARY_PATH = "/recordings/.speaker_library.pkl"
+GLOBAL_SPEAKER_PATH = "/recordings/.global_speaker_library.pkl"
+GLOBAL_COUNTER_PATH = "/recordings/.global_speaker_counter.txt"
 MAC_ASR_URL = "http://10.3.0.207:5001/transcribe"
+
+# Matching thresholds
+ENROLLED_THRESHOLD = 0.65   # user-enrolled: high confidence
+GLOBAL_THRESHOLD = 0.60     # cross-recording: slightly lower
 
 # --- Global caches ---
 _embedding_model = None
@@ -31,7 +45,7 @@ _silero_vad = None
 
 
 # ============================================================
-# SPEAKER LIBRARY
+# SPEAKER LIBRARY — enrolled (user-provided)
 # ============================================================
 
 def _load_speaker_library():
@@ -63,6 +77,94 @@ def _match_speaker(embedding, library, threshold=0.65):
     if best_score >= threshold:
         return best_name, float(best_score)
     return None, float(best_score)
+
+
+# ============================================================
+# GLOBAL SPEAKER LIBRARY — cross-recording discovered speakers
+# ============================================================
+
+def _load_global_library():
+    """Load cross-recording discovered speaker library.
+    
+    Format: {global_name: {"embedding": np.ndarray, "recordings": [str, ...], 
+                            "first_seen": float, "last_seen": float}}
+    """
+    if os.path.exists(GLOBAL_SPEAKER_PATH):
+        with open(GLOBAL_SPEAKER_PATH, 'rb') as f:
+            return pickle.load(f)
+    return {}
+
+
+def _save_global_library(lib):
+    os.makedirs(os.path.dirname(GLOBAL_SPEAKER_PATH), exist_ok=True)
+    with open(GLOBAL_SPEAKER_PATH, 'wb') as f:
+        pickle.dump(lib, f)
+
+
+def _get_global_counter() -> int:
+    """Get the next available global speaker ID."""
+    if os.path.exists(GLOBAL_COUNTER_PATH):
+        with open(GLOBAL_COUNTER_PATH) as f:
+            return int(f.read().strip())
+    return 1
+
+
+def _increment_global_counter() -> int:
+    """Increment and return the next global speaker ID."""
+    counter = _get_global_counter() + 1
+    os.makedirs(os.path.dirname(GLOBAL_COUNTER_PATH), exist_ok=True)
+    with open(GLOBAL_COUNTER_PATH, 'w') as f:
+        f.write(str(counter))
+    return counter - 1  # return the ID that was just consumed
+
+
+def _reset_global_counter():
+    """Reset the global counter (for rebuilding)."""
+    os.makedirs(os.path.dirname(GLOBAL_COUNTER_PATH), exist_ok=True)
+    with open(GLOBAL_COUNTER_PATH, 'w') as f:
+        f.write("1")
+
+
+def _next_global_name() -> str:
+    """Generate the next global speaker name, e.g. Speaker_07."""
+    next_id = _get_global_counter()
+    _increment_global_counter()
+    return f"Speaker_{next_id:02d}"
+
+
+def _match_global(embedding, global_lib, threshold=GLOBAL_THRESHOLD):
+    """Find best match in global library. Returns (name, score) or (None, best_score)."""
+    return _match_speaker(embedding, {k: v["embedding"] for k, v in global_lib.items()}, threshold=threshold)
+
+
+def _update_global_library(cluster_embeddings, cluster_names, recording_name: str, global_lib: dict):
+    """Update the global library with new/refined speaker embeddings.
+    
+    - For existing global speakers: refine the embedding (running average) and add recording.
+    - For newly assigned speakers: add a fresh entry.
+    """
+    now = time.time()
+    for label, name in cluster_names.items():
+        emb = cluster_embeddings[label]
+        if name in global_lib:
+            # Refine embedding: running average weighted by recording count
+            entry = global_lib[name]
+            n = len(entry.get("recordings", []))
+            if n > 0:
+                # Weighted update: new_avg = (old_avg * n + new_emb) / (n + 1)
+                entry["embedding"] = (entry["embedding"] * n + emb) / (n + 1)
+            entry["last_seen"] = now
+            if recording_name not in entry["recordings"]:
+                entry["recordings"].append(recording_name)
+        else:
+            # New speaker: add to global library
+            global_lib[name] = {
+                "embedding": emb,
+                "recordings": [recording_name],
+                "first_seen": now,
+                "last_seen": now,
+            }
+    _save_global_library(global_lib)
 
 
 # ============================================================
@@ -188,17 +290,23 @@ def preprocess_audio(input_path: str) -> str:
 
 
 # ============================================================
-# DIARIZATION
+# DIARIZATION (with cross-recording matching)
 # ============================================================
 
-def diarize_audio(audio_path: str, threshold: float = 0.65) -> dict:
+def diarize_audio(audio_path: str, threshold: float = ENROLLED_THRESHOLD) -> dict:
     """
     Full diarization pipeline:
     1. Break audio into short segments (2s windows, 1s stride)
     2. Extract ECAPA embeddings per segment
-    3. Cluster segments by speaker
-    4. Match clusters against speaker library
-    5. Return speaker-labeled segments
+    3. Cluster segments by speaker (agglomerative clustering)
+    4. Match clusters against global + enrolled speaker libraries
+    5. Update global library with new/refined embeddings
+    6. Return speaker-labeled segments
+
+    Cross-recording matching order:
+      a. Enrolled speakers (user-provided, threshold 0.65)
+      b. Global discovered speakers (auto-built, threshold 0.60)
+      c. If neither matches → assign new global ID
 
     Returns:
         segments: list of {start, end, speaker, speaker_raw} per 2s window
@@ -259,18 +367,38 @@ def diarize_audio(audio_path: str, threshold: float = 0.65) -> dict:
         mask = labels == label
         cluster_embeddings[label] = embeddings_np[mask].mean(axis=0)
 
-    # Match clusters against library
-    library = _load_speaker_library()
+    # ── Cross-recording speaker matching ──────────────────────────────
+    # Priority: 1) enrolled speakers, 2) global discovered, 3) new ID
+    enrolled_lib = _load_speaker_library()
+    global_lib = _load_global_library()
+
     cluster_names = {}
     for label, emb in cluster_embeddings.items():
-        name, score = _match_speaker(emb, library, threshold=threshold)
-        if name:
-            cluster_names[label] = name
-            logger.info(f"Cluster {label} matched -> {name} ({score:.3f})")
-        else:
-            label_name = f"Speaker_{label + 1:02d}"
-            cluster_names[label] = label_name
-            logger.info(f"Cluster {label} -> {label_name} (no match, score={score:.3f})")
+        # First: try enrolled speakers (highest confidence)
+        enrolled_name, enrolled_score = _match_speaker(emb, enrolled_lib, threshold=ENROLLED_THRESHOLD)
+        if enrolled_name:
+            cluster_names[label] = enrolled_name
+            logger.info(f"Cluster {label} → enrolled [{enrolled_name}] ({enrolled_score:.3f})")
+            continue
+
+        # Second: try global discovered library (cross-recording match)
+        global_name, global_score = _match_global(emb, global_lib, threshold=GLOBAL_THRESHOLD)
+        if global_name:
+            cluster_names[label] = global_name
+            logger.info(f"Cluster {label} → global [{global_name}] ({global_score:.3f})")
+            continue
+
+        # Third: no match — assign new global ID
+        new_name = _next_global_name()
+        cluster_names[label] = new_name
+        logger.info(f"Cluster {label} → NEW [{new_name}] (no match, best={global_score:.3f})")
+
+    # ── Update global library with this recording's clusters ──────────
+    # Extract recording name from path for tracking
+    recording_name = os.path.basename(audio_path)
+    if recording_name.endswith(".preprocessed.wav"):
+        recording_name = recording_name[:-len(".preprocessed.wav")]
+    _update_global_library(cluster_embeddings, cluster_names, recording_name, global_lib)
 
     # Build segments
     segments = []
@@ -302,6 +430,142 @@ def diarize_audio(audio_path: str, threshold: float = 0.65) -> dict:
     num_speakers = len(set(s["speaker"] for s in segments))
     logger.info(f"Diarization done: {len(segments)} segments, {num_speakers} speakers")
     return segments, speaker_turns
+
+
+# ============================================================
+# GLOBAL LIBRARY MANAGEMENT
+# ============================================================
+
+def list_global_speakers() -> dict:
+    """List all speakers in the global discovered library."""
+    lib = _load_global_library()
+    return {
+        name: {
+            "recordings": info["recordings"],
+            "first_seen": info.get("first_seen", 0),
+            "last_seen": info.get("last_seen", 0),
+        }
+        for name, info in lib.items()
+    }
+
+
+def rebuild_global_library():
+    """Rebuild the global speaker library from all existing transcriptions.
+    
+    Useful after renaming speakers or when the library gets stale.
+    Scans all completed transcription results and re-extracts cluster embeddings.
+    """
+    logger.info("Rebuilding global speaker library from all transcriptions...")
+    
+    # Reset counter
+    _reset_global_counter()
+    
+    # Find all completed transcriptions
+    trans_dir = Path("/recordings/.transcriptions")
+    if not trans_dir.exists():
+        logger.info("No transcriptions found, library empty")
+        _save_global_library({})
+        return {"status": "empty", "message": "No transcriptions found"}
+    
+    new_lib = {}
+    model = _get_embedding_model()
+    import torch
+
+    for result_file in sorted(trans_dir.glob("*.result.json")):
+        try:
+            with open(result_file) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Skipping {result_file}: {e}")
+            continue
+
+        if data.get("status") != "completed":
+            continue
+
+        # Extract diarization segments — use speaker_raw to get per-cluster info
+        segs = data.get("diarization_segments", [])
+        if not segs:
+            continue
+
+        # Group segments by speaker_raw to rebuild cluster embeddings
+        recording_name = result_file.stem.replace(".result", "")
+        raw_clusters = {}
+        for s in segs:
+            raw = s.get("speaker_raw", "UNKNOWN")
+            if raw not in raw_clusters:
+                raw_clusters[raw] = {"speaker": s.get("speaker", raw), "count": 0, "segments": []}
+            raw_clusters[raw]["count"] += 1
+            raw_clusters[raw]["segments"].append({
+                "start": s["start"],
+                "end": s["end"],
+            })
+
+        for raw_key, cluster_info in raw_clusters.items():
+            speaker_name = cluster_info["speaker"]
+            # If this speaker already exists in new_lib, merge
+            if speaker_name in new_lib:
+                if recording_name not in new_lib[speaker_name]["recordings"]:
+                    new_lib[speaker_name]["recordings"].append(recording_name)
+                continue
+
+            # Try to extract an embedding from this speaker's audio
+            # We use the first few segments to compute a mean embedding
+            preprocessed = str(Path("/recordings") / recording_name) + ".preprocessed.wav"
+            if not os.path.exists(preprocessed):
+                continue
+                
+            try:
+                audio_np, sr = sf.read(preprocessed)
+            except Exception as e:
+                logger.warning(f"Cannot read {preprocessed}: {e}")
+                continue
+
+            # Sample embeddings from this speaker's segments
+            seg_embeddings = []
+            for seg in cluster_info["segments"][:10]:  # up to 10 segments per speaker
+                start_s = int(seg["start"] * sr)
+                end_s = int(seg["end"] * sr)
+                if end_s - start_s < sr:  # less than 1s, skip
+                    continue
+                segment = audio_np[start_s:end_s]
+                waveform = torch.from_numpy(segment).unsqueeze(0).float()
+                try:
+                    emb = model.encode_batch(waveform)
+                    seg_embeddings.append(emb.squeeze().numpy())
+                except Exception:
+                    continue
+
+            if seg_embeddings:
+                # Use mean embedding for this speaker
+                new_lib[speaker_name] = {
+                    "embedding": np.mean(seg_embeddings, axis=0),
+                    "recordings": [recording_name],
+                    "first_seen": data.get("completed_at", time.time()),
+                    "last_seen": data.get("completed_at", time.time()),
+                }
+                logger.info(f"Rebuilt embedding for {speaker_name} from {recording_name}")
+
+    _save_global_library(new_lib)
+    _reset_global_counter()
+
+    # Re-number to match what we just saved
+    for i, name in enumerate(sorted(new_lib.keys()), 1):
+        pass  # names stay as they were
+    # Set counter past the current highest number
+    max_num = 0
+    for name in new_lib:
+        if name.startswith("Speaker_"):
+            try:
+                n = int(name.split("_")[1])
+                max_num = max(max_num, n)
+            except (ValueError, IndexError):
+                pass
+    with open(GLOBAL_COUNTER_PATH, 'w') as f:
+        f.write(str(max_num + 1))
+    
+    transcriptions = list(trans_dir.glob("*.result.json"))
+    logger.info(f"Global library rebuilt: {len(new_lib)} speakers from {len(transcriptions)} transcriptions")
+    return {"status": "rebuilt", "speaker_count": len(new_lib)}
 
 
 # ============================================================
