@@ -172,6 +172,53 @@ def transcribe_result(filename):
     return jsonify(status)
 
 
+# ── Speaker enrollment ─────────────────────────────────────────────────
+
+@app.route("/speakers", methods=["GET"])
+def speaker_list():
+    """List enrolled speakers."""
+    from diarization import list_speakers
+    speakers = list_speakers()
+    return jsonify({"speakers": speakers, "count": len(speakers)})
+
+
+@app.route("/speakers/enroll", methods=["POST"])
+def speaker_enroll():
+    """Enroll a speaker from an uploaded voice clip."""
+    if "audio" not in request.files or "name" not in request.form:
+        return jsonify({"error": "audio file and speaker name required"}), 400
+
+    audio_file = request.files["audio"]
+    name = request.form["name"].strip()
+    if not name:
+        return jsonify({"error": "Speaker name required"}), 400
+
+    suffix = Path(audio_file.filename).suffix if audio_file.filename else ".m4a"
+    tmp_path = f"/tmp/enroll_{name}{suffix}"
+    audio_file.save(tmp_path)
+
+    try:
+        from diarization import enroll_speaker
+        result = enroll_speaker(name, tmp_path)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@app.route("/speakers/<name>", methods=["DELETE"])
+def speaker_remove(name):
+    """Remove an enrolled speaker."""
+    from diarization import remove_speaker
+    if remove_speaker(name):
+        return jsonify({"status": "removed"})
+    return jsonify({"error": "Speaker not found"}), 404
+
+
 # ── Entry point ────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
