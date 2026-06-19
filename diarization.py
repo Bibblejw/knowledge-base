@@ -410,6 +410,12 @@ def diarize_audio(audio_path: str, threshold: float = ENROLLED_THRESHOLD) -> dic
             "speaker": cluster_names[label],
         })
 
+    # ── Post-merge: reassign fragment speakers ───────────────────────────
+    # A "fragment" is a speaker with very few segments and short total
+    # duration — typically a single "Yeah" or "Right" that got its own
+    # cluster.  We merge fragments into the temporally nearest main speaker.
+    segments = _merge_fragment_speakers(segments, min_segments=5, min_duration=5.0)
+
     # Merge contiguous same-speaker into turns
     speaker_turns = []
     current = None
@@ -566,6 +572,101 @@ def rebuild_global_library():
     transcriptions = list(trans_dir.glob("*.result.json"))
     logger.info(f"Global library rebuilt: {len(new_lib)} speakers from {len(transcriptions)} transcriptions")
     return {"status": "rebuilt", "speaker_count": len(new_lib)}
+
+
+# ============================================================
+# FRAGMENT MERGE — post-processing to clean up ephemeral labels
+# ============================================================
+
+def _merge_fragment_speakers(segments: list, min_segments: int = 3, min_duration: float = 4.0) -> list:
+    """Reassign speaker labels for fragments — speakers with very few segments
+    or very short total duration — to the temporally nearest main speaker.
+
+    This cleans up single-utterance clusters ("Yeah", "Okay", "Right") that
+    Whisper embedder separates from the main speaker, without reducing the
+    cluster count for legitimate multi-speaker meetings.
+
+    Args:
+        segments: diarization segments [{start, end, speaker, ...}]
+        min_segments: speakers with <= this many segments are fragments
+        min_duration: speakers with <= this many seconds total are fragments
+
+    Returns:
+        segments with fragment labels reassigned to nearest main speaker
+    """
+    if not segments:
+        return segments
+
+    # Calculate per-speaker stats
+    speaker_stats = {}
+    for s in segments:
+        sp = s["speaker"]
+        if sp not in speaker_stats:
+            speaker_stats[sp] = {"count": 0, "duration": 0.0}
+        speaker_stats[sp]["count"] += 1
+        speaker_stats[sp]["duration"] += s["end"] - s["start"]
+
+    # Identify fragment and main speakers
+    fragment_speakers = set()
+    main_speakers = {}
+    for sp, stats in speaker_stats.items():
+        if stats["count"] <= min_segments or stats["duration"] <= min_duration:
+            fragment_speakers.add(sp)
+        else:
+            main_speakers[sp] = stats
+
+    if not fragment_speakers or not main_speakers:
+        return segments  # nothing to merge
+
+    logger.info(f"Fragment merge: {len(fragment_speakers)} fragment speakers → {len(main_speakers)} main speakers")
+
+    # For each fragment segment, reassign to nearest main speaker
+    result = []
+    for i, seg in enumerate(segments):
+        if seg["speaker"] not in fragment_speakers:
+            result.append(seg)
+            continue
+
+        mid_time = (seg["start"] + seg["end"]) / 2
+
+        # Search forward and backward for nearest main speaker segment
+        best_speaker = None
+        best_distance = float("inf")
+
+        # Look forward
+        for j in range(i + 1, min(i + 20, len(segments))):
+            if segments[j]["speaker"] not in fragment_speakers:
+                dist = segments[j]["start"] - mid_time
+                if dist < best_distance:
+                    best_distance = dist
+                    best_speaker = segments[j]["speaker"]
+                break
+
+        # Look backward
+        for j in range(i - 1, max(i - 20, -1), -1):
+            if segments[j]["speaker"] not in fragment_speakers:
+                dist = mid_time - segments[j]["end"]
+                if dist < best_distance:
+                    best_distance = dist
+                    best_speaker = segments[j]["speaker"]
+                break
+
+        if best_speaker:
+            result.append({
+                **seg,
+                "speaker": best_speaker,
+                "speaker_raw": seg["speaker_raw"],
+                "_reassigned": True,
+            })
+        else:
+            result.append(seg)
+
+    reassigned = sum(1 for s in result if s.get("_reassigned", False))
+    # Clean up the flag
+    for s in result:
+        s.pop("_reassigned", None)
+    logger.info(f"Fragment merge: {reassigned} segments reassigned")
+    return result
 
 
 # ============================================================

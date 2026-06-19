@@ -212,6 +212,39 @@ def run_transcription(filename: str, diarization_threshold: float = 0.65) -> dic
                 if current:
                     speaker_turns_aligned.append(current)
 
+                # ── Word-count merge: reassign fragment speakers ──
+                # A fragment is a speaker with very few total words
+                # (just "Yeah", "Right", "Okay" responses). Reassign
+                # to the temporally nearest main speaker.
+                from collections import Counter
+                turn_word_counts = Counter()
+                for t in speaker_turns_aligned:
+                    turn_word_counts[t["speaker"]] += len(t["text"].split())
+                
+                total_words = sum(turn_word_counts.values())
+                # A speaker is a fragment if they have very few total words
+                # AND a tiny proportion of the conversation — catches cases
+                # where the same person was split into a "yeah/okay" cluster
+                # by the diarization (e.g. Speaker_09 with 45 words / 4.7%).
+                main_speakers = {sp for sp, wc in turn_word_counts.items() 
+                                 if not (wc < 50 and total_words > 0 and wc / total_words < 0.08)}
+                fragment_speakers = set(turn_word_counts.keys()) - main_speakers
+                
+                if fragment_speakers and main_speakers:
+                    logger.info(f"Word-count merge: {len(fragment_speakers)} fragment speakers → {len(main_speakers)} main speakers")
+                    merged = []
+                    for t in speaker_turns_aligned:
+                        if t["speaker"] in fragment_speakers:
+                            mid = (t["start"] + t["end"]) / 2
+                            closest = min(main_speakers, key=lambda sp: min(
+                                abs((ot["start"] + ot["end"]) / 2 - mid)
+                                for ot in speaker_turns_aligned if ot["speaker"] == sp
+                            ))
+                            t["speaker"] = closest
+                        merged.append(t)
+                    speaker_turns_aligned = merged
+                    logger.info(f"Word-count merge: now {len(set(t['speaker'] for t in speaker_turns_aligned))} speakers")
+
                 full_text = "\n".join(
                     f"[{t['speaker']}] {t['text']}" for t in speaker_turns_aligned
                 )
