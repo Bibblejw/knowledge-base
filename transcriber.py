@@ -14,6 +14,7 @@ import time
 import tempfile
 from pathlib import Path
 from post_process import apply_glossary
+from speaker_clues import annotate_result as apply_speaker_clues
 
 sys.path.insert(0, "/opt/knowledge-base")
 
@@ -289,6 +290,7 @@ def run_transcription(filename: str, diarization_threshold: float = 0.65) -> dic
 
         # Apply glossary corrections
         apply_glossary(result)
+        apply_speaker_clues(result)
 
         # Store result
         with open(_result_path(filename), "w") as f:
