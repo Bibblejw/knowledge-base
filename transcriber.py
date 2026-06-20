@@ -13,6 +13,7 @@ import sys
 import time
 import tempfile
 from pathlib import Path
+from post_process import apply_glossary
 
 sys.path.insert(0, "/opt/knowledge-base")
 
@@ -285,6 +286,9 @@ def run_transcription(filename: str, diarization_threshold: float = 0.65) -> dic
             os.unlink(processed_path)
         except OSError:
             pass
+
+        # Apply glossary corrections
+        apply_glossary(result)
 
         # Store result
         with open(_result_path(filename), "w") as f:
