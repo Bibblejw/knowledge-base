@@ -421,6 +421,49 @@ def api_rebuild_global():
     return jsonify(result)
 
 
+
+
+@app.route("/summarize/<path:filename>", methods=["POST"])
+def run_summarize(filename):
+    """Trigger LLM analysis for a completed transcription."""
+    from summarizer import summarize
+    import json, os
+    result_path = f"/recordings/.transcriptions/{filename}.result.json"
+    if not os.path.exists(result_path):
+        return jsonify({"error": "transcription not found"}), 404
+    with open(result_path) as f:
+        result = json.load(f)
+    if result.get("status") != "completed":
+        return jsonify({"error": "transcription not yet completed"}), 400
+    def _run():
+        try:
+            analysis = summarize(result)
+            result["llm_analysis"] = analysis
+            with open(result_path, "w") as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            logger.info(f"Summarizer: analysis saved for {filename}")
+        except Exception as e:
+            logger.error(f"Summarizer failed: {e}")
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"status": "started"}), 202
+
+
+@app.route("/summarize/<path:filename>/result")
+def summarize_result(filename):
+    """Get LLM analysis result."""
+    import json, os
+    result_path = f"/recordings/.transcriptions/{filename}.result.json"
+    if not os.path.exists(result_path):
+        return jsonify({"error": "not found"}), 404
+    with open(result_path) as f:
+        result = json.load(f)
+    analysis = result.get("llm_analysis")
+    if analysis is None:
+        return jsonify({"status": "not_available"})
+    return jsonify(analysis)
+
+
 # ── Entry point ────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
