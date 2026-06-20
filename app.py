@@ -464,6 +464,100 @@ def summarize_result(filename):
     return jsonify(analysis)
 
 
+# ── Pipeline Routes (composable stages) ────────────────────────────────
+
+ALL_STAGES = {"preprocess", "diarize", "asr", "align", "postprocess"}
+
+@app.route("/pipeline/<path:filename>/status")
+def pipeline_status(filename):
+    """Check which stages have been completed for a file."""
+    from pipeline import get_pipeline_status
+    return jsonify(get_pipeline_status(filename))
+
+
+@app.route("/pipeline/<path:filename>/<stage>", methods=["POST"])
+def pipeline_stage(filename, stage):
+    """Run a single pipeline stage: preprocess, diarize, asr, align, or postprocess."""
+    from pipeline import STAGE_FUNCS
+
+    if stage not in ALL_STAGES:
+        return jsonify({"error": f"unknown_stage:{stage}. Valid: {', '.join(sorted(ALL_STAGES))}"}), 400
+
+    audio_path = RECORDINGS_DIR / filename
+    if not audio_path.exists():
+        return jsonify({"error": "file_not_found"}), 404
+    if not is_audio(filename):
+        return jsonify({"error": "not_an_audio_file"}), 400
+
+    def _run():
+        try:
+            fn = STAGE_FUNCS[stage]
+            fn(filename)
+        except Exception as e:
+            logger.error(f"Pipeline stage {stage} failed: {e}")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "stage": stage, "filename": filename}), 202
+
+
+@app.route("/pipeline/<path:filename>/run", methods=["POST"])
+def pipeline_run(filename):
+    """Run full pipeline or selected stages. Query param: ?stages=preprocess,diarize,asr"""
+    from pipeline import STAGE_ORDER, run_pipeline
+
+    audio_path = RECORDINGS_DIR / filename
+    if not audio_path.exists():
+        return jsonify({"error": "file_not_found"}), 404
+    if not is_audio(filename):
+        return jsonify({"error": "not_an_audio_file"}), 400
+
+    stages_param = request.args.get("stages", "")
+    if stages_param:
+        stages = [s.strip() for s in stages_param.split(",") if s.strip()]
+        invalid = [s for s in stages if s not in ALL_STAGES]
+        if invalid:
+            return jsonify({"error": f"unknown_stages:{invalid}"}), 400
+    else:
+        stages = None
+
+    def _run():
+        try:
+            run_pipeline(filename, stages=stages)
+        except Exception as e:
+            logger.error(f"Pipeline run failed: {e}")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({
+        "status": "started",
+        "filename": filename,
+        "stages": stages or list(STAGE_ORDER),
+    }), 202
+
+
+@app.route("/pipeline/<path:filename>/result")
+def pipeline_result(filename):
+    """Get the final pipeline result (same as transcribe result)."""
+    result_path = RECORDINGS_DIR / ".transcriptions" / f"{filename}.result.json"
+    if not result_path.exists():
+        return jsonify({"error": "not_found", "message": "Pipeline has not completed yet"}), 404
+    with open(result_path) as f:
+        return jsonify(json.load(f))
+
+
+@app.route("/pipeline/<path:filename>/stage_result/<stage>")
+def pipeline_stage_result(filename, stage):
+    """Get an intermediate stage result."""
+    from pipeline import _read_intermediate
+    if stage not in ALL_STAGES:
+        return jsonify({"error": f"unknown_stage:{stage}"}), 400
+    data = _read_intermediate(filename, stage)
+    if data is None:
+        return jsonify({"error": "stage_not_completed", "stage": stage}), 404
+    return jsonify(data)
+
+
 # ── Entry point ────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
