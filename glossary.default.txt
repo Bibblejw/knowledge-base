@@ -1,0 +1,24 @@
+# Glossary — Knowledge Base Post-Processing
+#
+# Format:  pattern => replacement
+# Lines starting with # are comments. Empty lines are skipped.
+#
+# Letter-spaced acronyms (e.g., "B C P") are matched flexibly:
+#   "B C P", "B.C.P.", "B C Ps" all match "BCP"
+#
+# Word corrections are case-insensitive whole-word replacements.
+# Capitalization of the replacement follows the original.
+
+# --- Acronyms (letter-spaced) ---
+B C P => BCP
+B R P => BRP
+T R P => TRP
+T S R P => TSRP
+S E R P => SERP
+I T D R => ITDR
+I T S R => ITSR
+
+# --- Word corrections ---
+camban => kanban
+canban => kanban
+robusting => robust
