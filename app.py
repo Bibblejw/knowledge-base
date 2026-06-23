@@ -23,6 +23,7 @@ from flask import (
 )
 
 import transcriber
+import metadata
 
 app = Flask(__name__)
 
@@ -90,6 +91,7 @@ def list_recordings() -> list[dict]:
             if trans_status.get("status") == "completed":
                 segs = trans_status.get("sentences", [])
                 speakers = sorted(set(s["speaker"] for s in segs))
+            meta = metadata.get_metadata(f.name)
             recordings.append({
                 "name": f.name,
                 "size": human_size(stat.st_size),
@@ -100,6 +102,9 @@ def list_recordings() -> list[dict]:
                 "url": url_for("serve_file", filename=f.name),
                 "transcription": trans_status,
                 "speakers": speakers,
+                "labels": meta.get("labels", []),
+                "group": meta.get("group") or None,
+                "group_info": meta.get("group_info") or None,
             })
 
     return recordings
@@ -175,6 +180,8 @@ def delete_file(filename):
         # Clean up transcription files
         for f in (RECORDINGS_DIR / ".transcriptions").glob(f"{filename}.*"):
             f.unlink(missing_ok=True)
+        # Clean up metadata
+        metadata.delete_metadata(filename)
     return "", 204
 
 
@@ -559,6 +566,173 @@ def pipeline_stage_result(filename, stage):
 
 
 # ── Entry point ────────────────────────────────────────────────────────
+
+# ── Metadata API (labels & groups) ─────────────────────────────────────
+
+@app.route("/api/recordings/<path:filename>/labels", methods=["GET", "POST"])
+def api_recording_labels(filename):
+    """Get or set labels on a recording. POST body: {"labels": ["meeting", "project-x"]}"""
+    if request.method == "GET":
+        return jsonify({
+            "filename": filename,
+            "labels": metadata.get_labels(filename),
+        })
+    data = request.get_json() or {}
+    labels = data.get("labels", [])
+    if not isinstance(labels, list):
+        return jsonify({"error": "labels must be a list"}), 400
+    result = metadata.set_labels(filename, labels)
+    return jsonify(result)
+
+
+@app.route("/api/recordings/<path:filename>/labels/<label>", methods=["POST", "DELETE"])
+def api_recording_label(filename, label):
+    """Add or remove a single label."""
+    if request.method == "POST":
+        result = metadata.add_label(filename, label)
+    else:
+        result = metadata.remove_label(filename, label)
+    return jsonify(result)
+
+
+@app.route("/api/recordings/<path:filename>/group", methods=["GET", "POST"])
+def api_recording_group(filename):
+    """Get or set a recording's group. POST body: {"group": "alpha"}"""
+    if request.method == "GET":
+        return jsonify({
+            "filename": filename,
+            "group": metadata.get_group(filename),
+        })
+    data = request.get_json() or {}
+    group = data.get("group", None)
+    result = metadata.set_group(filename, group)
+    return jsonify(result)
+
+
+@app.route("/api/recordings/<path:filename>/notes", methods=["GET", "POST"])
+def api_recording_notes(filename):
+    """Get or set notes on a recording. POST body: {"notes": "..."}"""
+    if request.method == "GET":
+        meta = metadata.get_metadata(filename)
+        return jsonify({"filename": filename, "notes": meta.get("notes", "")})
+    data = request.get_json() or {}
+    result = metadata.set_notes(filename, data.get("notes", ""))
+    return jsonify(result)
+
+
+@app.route("/api/groups", methods=["GET", "POST"])
+def api_groups():
+    """List all groups or create a new one.
+    POST body: {"name": "Alpha", "label": "Project Alpha", "color": "#58a6ff", "description": "..."}"""
+    if request.method == "GET":
+        groups = metadata.get_groups()
+        # Enrich with recording counts
+        all_meta = metadata.get_all_metadata()
+        counts = {}
+        for fname, m in all_meta.items():
+            g = m.get("group")
+            if g:
+                counts[g] = counts.get(g, 0) + 1
+        result = {}
+        for key, g in groups.items():
+            result[key] = dict(g, recording_count=counts.get(key, 0))
+        return jsonify(result)
+
+    data = request.get_json() or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    group = metadata.create_group(
+        name=name,
+        label=data.get("label", name),
+        color=data.get("color", "#58a6ff"),
+        description=data.get("description", ""),
+    )
+    return jsonify(group), 201
+
+
+@app.route("/api/groups/<name>", methods=["DELETE"])
+def api_group_delete(name):
+    """Delete a group."""
+    if metadata.delete_group(name):
+        return jsonify({"status": "deleted", "group": name})
+    return jsonify({"error": "group_not_found"}), 404
+
+
+@app.route("/api/recordings")
+def api_recordings_list():
+    """List recordings with metadata, supports filtering.
+    Query params: ?label=meeting&group=alpha&labels=meeting,standup"""
+    label = request.args.get("label", "").strip() or None
+    group = request.args.get("group", "").strip() or None
+    labels_param = request.args.get("labels", "").strip() or None
+    labels = [l.strip() for l in labels_param.split(",") if l.strip()] if labels_param else None
+
+    # If filters provided, only return matching filenames
+    if label or group or labels:
+        fnames = metadata.filter_recordings(label=label, group=group, labels=labels)
+        result = []
+        for fname in fnames:
+            path = RECORDINGS_DIR / fname
+            if not path.exists():
+                continue
+            stat = path.stat()
+            trans_status = transcriber.get_status(fname)
+            meta = metadata.get_metadata(fname)
+            result.append({
+                "name": fname,
+                "size": human_size(stat.st_size),
+                "size_bytes": stat.st_size,
+                "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+                "url": url_for("serve_file", filename=fname),
+                "transcription": trans_status,
+                "labels": meta.get("labels", []),
+                "group": meta.get("group") or None,
+                "group_info": meta.get("group_info") or None,
+            })
+        return jsonify(result)
+
+    # No filters — return all with metadata
+    all_meta = metadata.get_all_metadata()
+    result = []
+    if RECORDINGS_DIR.exists():
+        for f in sorted(RECORDINGS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if f.is_file() and is_allowed(f.name):
+                stat = f.stat()
+                trans_status = transcriber.get_status(f.name)
+                speakers = []
+                if trans_status.get("status") == "completed":
+                    segs = trans_status.get("sentences", [])
+                    speakers = sorted(set(s["speaker"] for s in segs))
+                m = all_meta.get(f.name, {})
+                result.append({
+                    "name": f.name,
+                    "size": human_size(stat.st_size),
+                    "size_bytes": stat.st_size,
+                    "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+                    "url": url_for("serve_file", filename=f.name),
+                    "transcription": trans_status,
+                    "speakers": speakers,
+                    "labels": m.get("labels", []),
+                    "group": m.get("group") or None,
+                    "group_info": m.get("group_info") or None,
+                })
+    return jsonify(result)
+
+
+@app.route("/api/labels")
+def api_all_labels():
+    """Get all labels used across recordings."""
+    return jsonify({"labels": metadata.get_all_labels()})
+
+
+@app.route("/api/metadata/rebuild", methods=["POST"])
+def api_metadata_rebuild():
+    """Prune metadata for recordings that no longer exist on disk."""
+    removed = metadata.rebuild_from_disk()
+    return jsonify({"status": "ok", "orphaned_entries_removed": removed})
+
+
 
 if __name__ == "__main__":
     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
