@@ -17,6 +17,14 @@
 <section class="toolbar">
     <div class="toolbar-left">
         <span class="recording-count">{{ recordings|length }} recording{% if recordings|length != 1 %}s{% endif %}</span>
+        
+        {% if all_labels %}
+        <span class="label-filter-bar">
+            {% for label in all_labels %}
+            <a href="?label={{ label|urlencode }}" class="label-filter-pill {% if request.args.get('label') == label %}active{% endif %}">{{ label }}</a>
+            {% endfor %}
+        </span>
+        {% endif %}
     </div>
     <div class="toolbar-right">
         <button class="btn-batch" id="btn-batch">▶ Transcribe All Pending</button>
@@ -31,6 +39,8 @@
         <span class="col-size">Size</span>
         <span class="col-date">Added</span>
         <span class="col-speakers">Speakers</span>
+        <span class="col-labels">Labels</span>
+        <span class="col-group">Group</span>
         <span class="col-actions">Actions</span>
     </div>
     <ul class="file-list" id="file-list">
@@ -53,6 +63,29 @@
                     <span class="no-speakers">—</span>
                 {% endif %}
             </span>
+            
+            <span class="col-labels" data-file="{{ r.name }}">
+                {% for lbl in r.labels %}
+                <span class="label-pill" data-label="{{ lbl }}">
+                    {{ lbl }}
+                    <button class="label-remove" data-file="{{ r.name }}" data-label="{{ lbl }}" title="Remove label">×</button>
+                </span>
+                {% endfor %}
+                <button class="label-add" data-file="{{ r.name }}" title="Add label">+</button>
+            </span>
+            
+            <span class="col-group" data-file="{{ r.name }}">
+                {% if r.group_info %}
+                <span class="group-badge" style="--group-color: {{ r.group_info.color }}" data-group="{{ r.group }}"
+                      title="{{ r.group_info.label or r.group }}">{{ r.group_info.label or r.group }}</span>
+                {% elif r.group %}
+                <span class="group-badge" data-group="{{ r.group }}">{{ r.group }}</span>
+                {% else %}
+                <span class="no-group">—</span>
+                {% endif %}
+                <button class="group-change" data-file="{{ r.name }}" title="Change group">▾</button>
+            </span>
+            
             <span class="col-actions">
                 <button class="btn-play" data-url="{{ r.url }}" data-name="{{ r.name }}">▶ Play</button>
                 <button class="btn-transcribe {% if r.transcription.status == 'completed' %}btn-transcribed{% endif %}"
@@ -104,6 +137,20 @@
     <audio id="audio" controls autoplay></audio>
     <button class="btn-close-player" id="close-player">✕</button>
 </aside>
+
+<div class="label-popover" id="label-popover" hidden>
+    <input type="text" class="label-popover-input" id="label-popover-input" placeholder="Type label name…">
+    <div class="label-popover-suggestions" id="label-popover-suggestions"></div>
+</div>
+
+<div class="group-popover" id="group-popover" hidden>
+    <div class="group-popover-list" id="group-popover-list"></div>
+    <div class="group-popover-create">
+        <input type="text" class="group-popover-input" id="group-popover-input" placeholder="New group name…">
+        <input type="color" class="group-popover-color" id="group-popover-color" value="#58a6ff">
+        <button class="group-popover-btn" id="group-popover-btn">Create</button>
+    </div>
+</div>
 
 <script>
 // ── Drag & drop upload ────────────────────────────────────────────────
@@ -222,10 +269,8 @@ document.getElementById('btn-batch').addEventListener('click', async function() 
 
     if (data.status === 'started') {
         status.textContent = `⏳ Transcribing ${data.count} file(s)…`;
-        // Poll until all done
         async function checkAll() {
             const listResp = await fetch('/');
-            // Simple: reload when we detect all transcribed
             setTimeout(() => location.reload(), 5000);
         }
         checkAll();
@@ -234,5 +279,260 @@ document.getElementById('btn-batch').addEventListener('click', async function() 
         setTimeout(() => { status.hidden = true; this.disabled = false; }, 2000);
     }
 });
+
+// ── Labels editing ────────────────────────────────────────────────────
+const labelPopover = document.getElementById('label-popover');
+const labelInput = document.getElementById('label-popover-input');
+const labelSuggestions = document.getElementById('label-popover-suggestions');
+let activeFile = null;
+
+// All existing labels (populated from template)
+const allLabels = {{ all_labels|tojson|safe }};
+
+async function apiAddLabel(filename, label) {
+    const resp = await fetch(`/api/recordings/${encodeURIComponent(filename)}/labels/${encodeURIComponent(label)}`, { method: 'POST' });
+    return resp.ok;
+}
+
+async function apiRemoveLabel(filename, label) {
+    const resp = await fetch(`/api/recordings/${encodeURIComponent(filename)}/labels/${encodeURIComponent(label)}`, { method: 'DELETE' });
+    return resp.ok;
+}
+
+function refreshRow(filename) {
+    // Find the row and refresh its labels/group from the API
+    const labelsCol = document.querySelector(`.col-labels[data-file="${CSS.escape(filename)}"]`);
+    const groupCol = document.querySelector(`.col-group[data-file="${CSS.escape(filename)}"]`);
+    if (!labelsCol || !groupCol) return;
+    
+    fetch(`/api/recordings/${encodeURIComponent(filename)}/labels`)
+        .then(r => r.json())
+        .then(data => {
+            labelsCol.innerHTML = '';
+            (data.labels || []).forEach(lbl => {
+                const pill = document.createElement('span');
+                pill.className = 'label-pill';
+                pill.dataset.label = lbl;
+                pill.innerHTML = `${lbl} <button class="label-remove" data-file="${filename}" data-label="${lbl}" title="Remove label">×</button>`;
+                pill.querySelector('.label-remove').addEventListener('click', () => removeLabel(filename, lbl, pill));
+                labelsCol.appendChild(pill);
+            });
+            const addBtn = document.createElement('button');
+            addBtn.className = 'label-add';
+            addBtn.dataset.file = filename;
+            addBtn.textContent = '+';
+            addBtn.title = 'Add label';
+            addBtn.addEventListener('click', () => showLabelPopover(addBtn, filename));
+            labelsCol.appendChild(addBtn);
+        });
+    
+    fetch(`/api/recordings/${encodeURIComponent(filename)}/group`)
+        .then(r => r.json())
+        .then(data => {
+            groupCol.innerHTML = '';
+            if (data.group_info) {
+                const badge = document.createElement('span');
+                badge.className = 'group-badge';
+                badge.style.setProperty('--group-color', data.group_info.color);
+                badge.dataset.group = data.group;
+                badge.title = data.group_info.label || data.group;
+                badge.textContent = data.group_info.label || data.group;
+                groupCol.appendChild(badge);
+            } else if (data.group) {
+                const badge = document.createElement('span');
+                badge.className = 'group-badge';
+                badge.dataset.group = data.group;
+                badge.textContent = data.group;
+                groupCol.appendChild(badge);
+            } else {
+                const none = document.createElement('span');
+                none.className = 'no-group';
+                none.textContent = '—';
+                groupCol.appendChild(none);
+            }
+            const chgBtn = document.createElement('button');
+            chgBtn.className = 'group-change';
+            chgBtn.dataset.file = filename;
+            chgBtn.textContent = '▾';
+            chgBtn.title = 'Change group';
+            chgBtn.addEventListener('click', () => showGroupPopover(chgBtn, filename));
+            groupCol.appendChild(chgBtn);
+        });
+}
+
+function showLabelPopover(anchor, filename) {
+    activeFile = filename;
+    const rect = anchor.getBoundingClientRect();
+    labelPopover.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+    labelPopover.style.left = (rect.left + window.scrollX) + 'px';
+    labelPopover.hidden = false;
+    labelInput.value = '';
+    labelInput.focus();
+    updateSuggestions('');
+}
+
+function hideLabelPopover() {
+    labelPopover.hidden = true;
+    activeFile = null;
+}
+
+function updateSuggestions(query) {
+    const q = query.toLowerCase().trim();
+    const matches = allLabels.filter(l => l.toLowerCase().includes(q)).slice(0, 8);
+    labelSuggestions.innerHTML = matches.map(l => 
+        `<button class="label-suggestion" data-label="${l}">${l}</button>`
+    ).join('');
+    labelSuggestions.querySelectorAll('.label-suggestion').forEach(btn => {
+        btn.addEventListener('click', () => addLabel(activeFile, btn.dataset.label));
+    });
+}
+
+async function addLabel(filename, label) {
+    label = label.trim();
+    if (!label || !filename) return;
+    if (await apiAddLabel(filename, label)) {
+        if (!allLabels.includes(label)) allLabels.push(label);
+        refreshRow(filename);
+    }
+    hideLabelPopover();
+}
+
+async function removeLabel(filename, label, pillEl) {
+    if (await apiRemoveLabel(filename, label)) {
+        refreshRow(filename);
+    }
+}
+
+labelInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addLabel(activeFile, labelInput.value);
+    if (e.key === 'Escape') hideLabelPopover();
+});
+labelInput.addEventListener('input', () => updateSuggestions(labelInput.value));
+
+document.addEventListener('click', (e) => {
+    if (!labelPopover.contains(e.target) && !e.target.closest('.label-add')) {
+        hideLabelPopover();
+    }
+});
+
+// Bind existing UI elements
+function bindLabelHandlers() {
+    document.querySelectorAll('.label-add').forEach(btn => {
+        btn.addEventListener('click', () => showLabelPopover(btn, btn.dataset.file));
+    });
+    document.querySelectorAll('.label-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeLabel(btn.dataset.file, btn.dataset.label, btn.closest('.label-pill'));
+        });
+    });
+}
+
+// ── Group editing ─────────────────────────────────────────────────────
+const groupPopover = document.getElementById('group-popover');
+const groupInput = document.getElementById('group-popover-input');
+const groupColor = document.getElementById('group-popover-color');
+const groupCreateBtn = document.getElementById('group-popover-btn');
+let activeGroupFile = null;
+
+// All existing groups (populated from template)
+const allGroups = {{ all_groups|tojson|safe }};
+
+async function apiSetGroup(filename, group) {
+    const resp = await fetch(`/api/recordings/${encodeURIComponent(filename)}/group`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group: group})
+    });
+    return resp.ok;
+}
+
+async function apiCreateGroup(name, label, color) {
+    const resp = await fetch('/api/groups', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, label: label || name, color: color})
+    });
+    return resp.ok ? await resp.json() : null;
+}
+
+function showGroupPopover(anchor, filename) {
+    activeGroupFile = filename;
+    const rect = anchor.getBoundingClientRect();
+    groupPopover.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+    groupPopover.style.left = Math.min(rect.left + window.scrollX, window.innerWidth - 220) + 'px';
+    groupPopover.hidden = false;
+    groupInput.value = '';
+    renderGroupList();
+    groupInput.focus();
+}
+
+function hideGroupPopover() {
+    groupPopover.hidden = true;
+    activeGroupFile = null;
+}
+
+function renderGroupList() {
+    const list = document.getElementById('group-popover-list');
+    list.innerHTML = Object.entries(allGroups).map(([name, info]) => {
+        const c = info.color || '#58a6ff';
+        const label = info.label || name;
+        return `<button class="group-option" data-group="${name}" style="--group-color: ${c}">
+            <span class="group-option-swatch" style="background:${c}"></span>
+            ${label}
+            <span class="group-option-count">${info.recording_count || 0}</span>
+        </button>`;
+    }).join('');
+    
+    list.querySelectorAll('.group-option').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (await apiSetGroup(activeGroupFile, btn.dataset.group)) {
+                refreshRow(activeGroupFile);
+            }
+            hideGroupPopover();
+        });
+    });
+    
+    // "None" option
+    const noneBtn = document.createElement('button');
+    noneBtn.className = 'group-option group-option-none';
+    noneBtn.textContent = 'No group';
+    noneBtn.addEventListener('click', async () => {
+        if (await apiSetGroup(activeGroupFile, '')) {
+            refreshRow(activeGroupFile);
+        }
+        hideGroupPopover();
+    });
+    list.appendChild(noneBtn);
+}
+
+groupCreateBtn.addEventListener('click', async () => {
+    const name = groupInput.value.trim();
+    if (!name) return;
+    const result = await apiCreateGroup(name, name, groupColor.value);
+    if (result) {
+        allGroups[name] = {label: name, color: groupColor.value, recording_count: 0};
+        if (await apiSetGroup(activeGroupFile, name)) {
+            refreshRow(activeGroupFile);
+        }
+        hideGroupPopover();
+    }
+});
+
+document.addEventListener('click', (e) => {
+    if (!groupPopover.contains(e.target) && !e.target.closest('.group-change')) {
+        hideGroupPopover();
+    }
+});
+
+// Bind existing group-change buttons
+function bindGroupHandlers() {
+    document.querySelectorAll('.group-change').forEach(btn => {
+        btn.addEventListener('click', () => showGroupPopover(btn, btn.dataset.file));
+    });
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {    bindLabelHandlers();    bindGroupHandlers();});
 </script>
 {% endblock %}

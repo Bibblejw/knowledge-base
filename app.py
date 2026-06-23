@@ -150,7 +150,11 @@ def utility_processor():
 
 @app.route("/")
 def index():
-    return render_template("index.html", recordings=list_recordings())
+    import metadata
+    return render_template("index.html",
+        recordings=list_recordings(),
+        all_labels=metadata.get_all_labels(),
+        all_groups=metadata.get_groups())
 
 
 @app.route("/upload", methods=["POST"])

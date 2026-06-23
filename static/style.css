@@ -689,3 +689,263 @@ main { max-width: 960px; margin: 0 auto; padding: 2rem; }
     .recording-header { flex-direction: column; }
     .speaker-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Labels ────────────────────────────────────────────────────────── */
+.col-labels {
+    flex: 0 0 200px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+
+.col-group {
+    flex: 0 0 130px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.label-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: rgba(31, 111, 235, 0.15);
+    color: #58a6ff;
+    border: 1px solid rgba(31, 111, 235, 0.3);
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    cursor: default;
+    transition: background 0.15s;
+}
+.label-pill:hover { background: rgba(31, 111, 235, 0.25); }
+
+.label-pill .label-remove {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0 1px;
+    opacity: 0.6;
+}
+.label-pill .label-remove:hover { opacity: 1; }
+
+.label-add {
+    background: none;
+    border: 1px dashed #30363d;
+    color: #8b949e;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    padding: 0;
+    transition: border-color 0.15s, color 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.label-add:hover { border-color: #58a6ff; color: #58a6ff; }
+
+.no-speakers,
+.no-group {
+    color: #484f58;
+    font-size: 0.8rem;
+}
+
+.label-filter-bar {
+    display: inline-flex;
+    gap: 6px;
+    margin-left: 12px;
+    flex-wrap: wrap;
+}
+
+.label-filter-pill {
+    display: inline-block;
+    background: rgba(31, 111, 235, 0.1);
+    color: #8b949e;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 0.72rem;
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+}
+.label-filter-pill:hover { color: #58a6ff; background: rgba(31, 111, 235, 0.18); }
+.label-filter-pill.active { background: rgba(31, 111, 235, 0.25); color: #58a6ff; border-color: rgba(31, 111, 235, 0.4); }
+
+/* ── Groups ────────────────────────────────────────────────────────── */
+.group-badge {
+    display: inline-flex;
+    align-items: center;
+    background: color-mix(in srgb, var(--group-color, #58a6ff) 15%, transparent);
+    color: var(--group-color, #58a6ff);
+    border: 1px solid color-mix(in srgb, var(--group-color, #58a6ff) 35%, transparent);
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    cursor: default;
+}
+
+.group-change {
+    background: none;
+    border: 1px solid transparent;
+    color: #8b949e;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0 3px;
+    transition: color 0.15s, border-color 0.15s;
+}
+.group-change:hover { color: #c9d1d9; border-color: #30363d; }
+
+/* ── Label Popover ─────────────────────────────────────────────────── */
+.label-popover {
+    position: absolute;
+    z-index: 100;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    width: 220px;
+    padding: 8px;
+}
+
+.label-popover-input {
+    width: 100%;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.8rem;
+    box-sizing: border-box;
+}
+.label-popover-input:focus { outline: none; border-color: #1f6feb; }
+
+.label-popover-suggestions {
+    margin-top: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.label-suggestion {
+    background: rgba(31, 111, 235, 0.12);
+    color: #58a6ff;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.label-suggestion:hover { background: rgba(31, 111, 235, 0.25); border-color: rgba(31, 111, 235, 0.3); }
+
+/* ── Group Popover ─────────────────────────────────────────────────── */
+.group-popover {
+    position: absolute;
+    z-index: 100;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    width: 220px;
+}
+
+.group-popover-list {
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 4px;
+}
+
+.group-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: none;
+    border: none;
+    color: #c9d1d9;
+    padding: 6px 8px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    border-radius: 4px;
+    text-align: left;
+}
+.group-option:hover { background: rgba(31, 111, 235, 0.1); }
+
+.group-option-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.group-option-count {
+    margin-left: auto;
+    color: #484f58;
+    font-size: 0.7rem;
+}
+
+.group-option-none {
+    border-top: 1px solid #21262d;
+    margin-top: 4px;
+    padding-top: 6px;
+    color: #8b949e;
+    font-style: italic;
+}
+
+.group-popover-create {
+    display: flex;
+    gap: 4px;
+    padding: 6px 8px;
+    border-top: 1px solid #21262d;
+    align-items: center;
+}
+
+.group-popover-input {
+    flex: 1;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    min-width: 0;
+}
+.group-popover-input:focus { outline: none; border-color: #1f6feb; }
+
+.group-popover-color {
+    width: 24px;
+    height: 24px;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    cursor: pointer;
+    background: none;
+    padding: 0;
+}
+
+.group-popover-btn {
+    background: #1f6feb;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.group-popover-btn:hover { background: #388bfd; }
+
+/* ── Responsive: labels/group collapse ─────────────────────────────── */
+@media (max-width: 900px) {
+    .col-labels { display: none; }
+    .col-group { display: none; }
+}
